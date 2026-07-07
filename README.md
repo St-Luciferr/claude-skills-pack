@@ -12,42 +12,47 @@ Amazon Connect evolves.
 ## What's inside
 
 ```
-.claude/
-├── skills/
-│   ├── aws-connect/                 # main skill (auto-activates on Connect tasks)
-│   │   ├── SKILL.md                 # entry point + routing table + hard-won rules
-│   │   ├── references/              # ~2,900 lines of researched documentation
-│   │   │   ├── core-concepts.md     # instances, routing, queues, quotas, IAM
-│   │   │   ├── contact-flows.md     # flow language JSON, block catalog, attributes
-│   │   │   ├── apis-sdks.md         # all 10 API namespaces, TPS limits, code examples
-│   │   │   ├── frontend-streams.md  # CCP, Streams, ChatJS, chat widget, workspace apps
-│   │   │   ├── ai-integrations.md   # Lambda, Lex V2, Q in Connect / AI agents, Contact Lens
-│   │   │   ├── data-analytics.md    # CTRs, event streams, GetMetricDataV2, data lake
-│   │   │   ├── iac-devops.md        # CFN/CDK/Terraform, flow-content-as-code, CI/CD
-│   │   │   └── changelog.md         # notable Connect changes 2025-01 → 2026-07
-│   │   └── scripts/
-│   │       └── fetch-whats-new.sh   # pulls Connect announcements from AWS What's New
-│   ├── aws-connect-build/           # /aws-connect-build — requirements → deployable package
-│   └── aws-connect-update/          # /aws-connect-update — refreshes the references
-└── agents/
-    ├── aws-connect-architect.md     # solution & routing design
-    ├── aws-connect-flow-builder.md  # authors/validates flow-language JSON
-    ├── aws-connect-backend-dev.md   # APIs, Lambdas, event/data pipelines
-    └── aws-connect-frontend-dev.md  # CCP/Streams/ChatJS/workspace UIs
+install.sh                           # installer (user-level or per-project)
+skills/
+├── aws-connect/                     # main skill (auto-activates on Connect tasks)
+│   ├── SKILL.md                     # entry point + routing table + hard-won rules
+│   ├── references/                  # ~2,900 lines of researched documentation
+│   │   ├── core-concepts.md         # instances, routing, queues, quotas, IAM
+│   │   ├── contact-flows.md         # flow language JSON, block catalog, attributes
+│   │   ├── apis-sdks.md             # all 10 API namespaces, TPS limits, code examples
+│   │   ├── frontend-streams.md      # CCP, Streams, ChatJS, chat widget, workspace apps
+│   │   ├── ai-integrations.md       # Lambda, Lex V2, Q in Connect / AI agents, Contact Lens
+│   │   ├── data-analytics.md        # CTRs, event streams, GetMetricDataV2, data lake
+│   │   ├── iac-devops.md            # CFN/CDK/Terraform, flow-content-as-code, CI/CD
+│   │   └── changelog.md             # notable Connect changes 2025-01 → 2026-07
+│   └── scripts/
+│       └── fetch-whats-new.sh       # pulls Connect announcements from AWS What's New
+├── aws-connect-build/               # /aws-connect-build — requirements → deployable package
+└── aws-connect-update/              # /aws-connect-update — refreshes the references
+agents/
+├── aws-connect-architect.md         # solution & routing design
+├── aws-connect-flow-builder.md      # authors/validates flow-language JSON
+├── aws-connect-backend-dev.md       # APIs, Lambdas, event/data pipelines
+└── aws-connect-frontend-dev.md      # CCP/Streams/ChatJS/workspace UIs
 ```
 
 ## Install
 
-**Per project** — copy (or submodule) the `.claude/` directory into your project
-root. Claude Code picks up project skills and agents automatically.
+```bash
+git clone <this-repo-url>
+cd <repo>
+./install.sh              # user-level (~/.claude) — available in every project
+```
 
-**Globally** — copy the contents into your home config so the skill works in every
-project:
+Or install into a single project instead:
 
 ```bash
-cp -r .claude/skills/aws-connect .claude/skills/aws-connect-update ~/.claude/skills/
-cp .claude/agents/aws-connect-*.md ~/.claude/agents/
+./install.sh --project /path/to/your/project
 ```
+
+Other flags: `--force` (overwrite an existing install, e.g. when pulling a newer
+version of this repo), `--uninstall` (remove the skills/agents from the target;
+combine with `--project` for project installs).
 
 Skills load at session start — restart Claude Code after installing.
 
