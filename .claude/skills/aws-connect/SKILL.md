@@ -38,7 +38,12 @@ bundles researched reference material, specialized subagents, and an update work
    - `aws-connect-backend-dev` — API integrations, Lambdas, data pipelines
    - `aws-connect-frontend-dev` — CCP/Streams/ChatJS/agent-workspace UIs
 
-3. **Trust but verify volatile facts.** Reference files carry a `> Last updated:` line.
+3. **Building a full solution from scratch?** Use the companion skill
+   **`/aws-connect-build`** — it interviews the user for requirements, produces a
+   design, and generates a deployable package (CloudFormation, flow JSON with ARN
+   placeholders, Lambdas, OpenAPI schemas for MCP tools, AI prompts, deploy.sh).
+
+4. **Trust but verify volatile facts.** Reference files carry a `> Last updated:` line.
    Quotas, region availability, pricing, and anything newer than that date should be
    confirmed against live docs (WebSearch/WebFetch of `docs.aws.amazon.com/connect/`)
    before it becomes a load-bearing decision. Prefer the reference files for stable

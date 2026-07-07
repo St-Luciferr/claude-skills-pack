@@ -27,6 +27,7 @@ Amazon Connect evolves.
 │   │   │   └── changelog.md         # notable Connect changes 2025-01 → 2026-07
 │   │   └── scripts/
 │   │       └── fetch-whats-new.sh   # pulls Connect announcements from AWS What's New
+│   ├── aws-connect-build/           # /aws-connect-build — requirements → deployable package
 │   └── aws-connect-update/          # /aws-connect-update — refreshes the references
 └── agents/
     ├── aws-connect-architect.md     # solution & routing design
@@ -56,6 +57,17 @@ Just ask Claude Code for Amazon Connect work — the skill activates on its own
 (e.g. "build an inbound flow with a Lambda customer lookup", "embed a custom CCP
 in our React app", "set up a CTR → Athena pipeline"). Reference files are loaded
 selectively per task, and the specialized agents can be delegated to by name.
+
+## Generate a full solution
+
+Run `/aws-connect-build` to go from requirements to a deployable package. It
+interviews you (channels, routing, AI/self-service scope, integrations,
+environments), writes `REQUIREMENTS.md` and `DESIGN.md`, then generates:
+CloudFormation template(s), `flows/*.flow.json` with per-environment ARN
+placeholders, Lambda functions with tests, OpenAPI schemas for MCP tool
+integrations, AI prompt/agent definitions, per-env config, and an idempotent
+`deploy.sh` — plus explicit instructions for the steps AWS doesn't let you
+automate (number claiming, SAML setup, approved origins).
 
 ## Keep it current
 
