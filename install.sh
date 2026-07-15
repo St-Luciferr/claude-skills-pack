@@ -1,103 +1,101 @@
 #!/usr/bin/env bash
-# Install the Amazon Connect skill pack into Claude Code.
+# Bootstrap installer for claude-packs — Claude Code skill/agent bundles.
 #
-# Usage:
-#   ./install.sh                  # install user-level (~/.claude) — available in all projects
-#   ./install.sh --project [DIR]  # install into DIR/.claude (default: current directory)
-#   ./install.sh --force          # overwrite existing installs without prompting
-#   ./install.sh --uninstall      # remove previously installed skills/agents from the target
+# Preferred usage (from a clone of this repo):
+#   ./install.sh <command> [bundles...] [options]     # forwards to the claude-packs CLI
 #
-# Options combine: ./install.sh --project ~/my-app --force
+# Examples:
+#   ./install.sh list
+#   ./install.sh install aws-connect                  # user-level (~/.claude)
+#   ./install.sh install aws-connect --project .      # into ./.claude
+#   ./install.sh uninstall aws-connect
+#
+# If Node.js is available this delegates to bin/claude-packs.js (full-featured).
+# Without Node it falls back to a plain bash copy of the requested bundle(s).
+#
+# You can also skip cloning entirely and run the CLI straight from GitHub:
+#   npx github:OWNER/REPO install aws-connect
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILLS=(aws-connect aws-connect-build aws-connect-update)
-AGENTS=(aws-connect-architect aws-connect-flow-builder aws-connect-backend-dev aws-connect-frontend-dev)
+CLI="${REPO_ROOT}/bin/claude-packs.js"
 
+# --- Prefer the Node CLI ------------------------------------------------------
+if command -v node >/dev/null 2>&1 && [[ -f "$CLI" ]]; then
+  exec node "$CLI" "$@"
+fi
+
+# --- Bash fallback (no Node) ---------------------------------------------------
+echo "Node.js not found — using the bash fallback installer." >&2
+echo "(Install Node.js for list/info/uninstall/update and multi-bundle support.)" >&2
+echo >&2
+
+BUNDLES_DIR="${REPO_ROOT}/bundles"
 TARGET="${HOME}/.claude"
 FORCE=0
-UNINSTALL=0
+BUNDLES=()
 
+# Parse a reduced arg set: [install] <bundle...> [--project [dir]] [--force]
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --project)
+    install|add) shift ;;
+    --project|-p)
       shift
-      if [[ $# -gt 0 && "$1" != --* ]]; then
-        TARGET="$(cd "$1" && pwd)/.claude"; shift
-      else
-        TARGET="$(pwd)/.claude"
-      fi
+      if [[ $# -gt 0 && "$1" != -* ]]; then TARGET="$(cd "$1" && pwd)/.claude"; shift
+      else TARGET="$(pwd)/.claude"; fi
       ;;
-    --force) FORCE=1; shift ;;
-    --uninstall) UNINSTALL=1; shift ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -9; exit 0 ;;
-    *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
+    --user|-u) TARGET="${HOME}/.claude"; shift ;;
+    --force|-f) FORCE=1; shift ;;
+    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -20; exit 0 ;;
+    -*) echo "Unknown option: $1" >&2; exit 1 ;;
+    *) BUNDLES+=("$1"); shift ;;
   esac
 done
 
-if [[ "$UNINSTALL" -eq 1 ]]; then
-  for s in "${SKILLS[@]}"; do
-    if [[ -d "${TARGET}/skills/${s}" ]]; then rm -rf "${TARGET}/skills/${s}"; echo "removed ${TARGET}/skills/${s}"; fi
-  done
-  for a in "${AGENTS[@]}"; do
-    if [[ -f "${TARGET}/agents/${a}.md" ]]; then rm -f "${TARGET}/agents/${a}.md"; echo "removed ${TARGET}/agents/${a}.md"; fi
-  done
-  echo "Uninstalled from ${TARGET}."
-  exit 0
+if [[ ${#BUNDLES[@]} -eq 0 ]]; then
+  echo "Available bundles:" >&2
+  for d in "${BUNDLES_DIR}"/*/; do [[ -f "${d}bundle.json" ]] && echo "  - $(basename "$d")" >&2; done
+  echo >&2
+  echo "Usage: ./install.sh install <bundle...> [--project [dir]] [--force]" >&2
+  exit 1
 fi
 
-for s in "${SKILLS[@]}"; do
-  if [[ ! -d "${REPO_ROOT}/skills/${s}" ]]; then
-    echo "ERROR: ${REPO_ROOT}/skills/${s} not found — run install.sh from a full clone of the repo." >&2
-    exit 1
-  fi
-done
-
-confirm_overwrite() {
-  local path="$1"
-  if [[ "$FORCE" -eq 1 ]]; then return 0; fi
-  if [[ ! -t 0 ]]; then
-    echo "ERROR: ${path} already exists. Re-run with --force to overwrite." >&2
-    exit 1
-  fi
-  read -r -p "${path} already exists. Overwrite? [y/N] " answer
-  [[ "$answer" == "y" || "$answer" == "Y" ]]
+# Minimal JSON list extraction (no jq dependency): pull "skills" / "agents" arrays.
+json_array() { # $1=file $2=key
+  awk -v key="\"$2\"" '
+    $0 ~ key"[[:space:]]*:" { grab=1 }
+    grab { buf = buf $0; if ($0 ~ /\]/) { grab=0 } }
+    END {
+      sub(/.*\[/, "", buf); sub(/\].*/, "", buf)
+      n = split(buf, a, ",")
+      for (i=1;i<=n;i++) { gsub(/[[:space:]"]/, "", a[i]); if (a[i] != "") print a[i] }
+    }' "$1"
 }
 
 mkdir -p "${TARGET}/skills" "${TARGET}/agents"
 
-installed=()
-skipped=()
+for bundle in "${BUNDLES[@]}"; do
+  bdir="${BUNDLES_DIR}/${bundle}"
+  manifest="${bdir}/bundle.json"
+  if [[ ! -f "$manifest" ]]; then echo "Unknown bundle: ${bundle}" >&2; exit 1; fi
+  echo "Installing ${bundle} -> ${TARGET}"
 
-for s in "${SKILLS[@]}"; do
-  dest="${TARGET}/skills/${s}"
-  if [[ -e "$dest" ]]; then
-    if confirm_overwrite "$dest"; then rm -rf "$dest"; else skipped+=("skill ${s}"); continue; fi
-  fi
-  cp -R "${REPO_ROOT}/skills/${s}" "$dest"
-  installed+=("skill ${s} -> ${dest}")
+  while IFS= read -r s; do
+    [[ -z "$s" ]] && continue
+    src="${bdir}/skills/${s}"; dest="${TARGET}/skills/${s}"
+    [[ ! -d "$src" ]] && { echo "  ! skill ${s} missing, skipping"; continue; }
+    if [[ -e "$dest" && $FORCE -ne 1 ]]; then echo "  - skill ${s} exists (use --force)"; continue; fi
+    rm -rf "$dest"; cp -R "$src" "$dest"; echo "  + skill ${s}"
+  done < <(json_array "$manifest" skills)
+
+  while IFS= read -r a; do
+    [[ -z "$a" ]] && continue
+    src="${bdir}/agents/${a}.md"; dest="${TARGET}/agents/${a}.md"
+    [[ ! -f "$src" ]] && { echo "  ! agent ${a} missing, skipping"; continue; }
+    if [[ -e "$dest" && $FORCE -ne 1 ]]; then echo "  - agent ${a} exists (use --force)"; continue; fi
+    cp "$src" "$dest"; echo "  + agent ${a}"
+  done < <(json_array "$manifest" agents)
 done
 
-for a in "${AGENTS[@]}"; do
-  src="${REPO_ROOT}/agents/${a}.md"
-  dest="${TARGET}/agents/${a}.md"
-  if [[ -e "$dest" ]]; then
-    if confirm_overwrite "$dest"; then rm -f "$dest"; else skipped+=("agent ${a}"); continue; fi
-  fi
-  cp "$src" "$dest"
-  installed+=("agent ${a} -> ${dest}")
-done
-
-chmod +x "${TARGET}/skills/aws-connect/scripts/fetch-whats-new.sh" 2>/dev/null || true
-
 echo
-echo "Installed to ${TARGET}:"
-for line in "${installed[@]}"; do echo "  + ${line}"; done
-if [[ "${#skipped[@]}" -gt 0 ]]; then
-  echo "Skipped (already present, not overwritten):"
-  for line in "${skipped[@]}"; do echo "  - ${line}"; done
-fi
-echo
-echo "Done. Restart Claude Code (skills load at session start), then try:"
-echo "  /aws-connect-build   — generate a deployable Connect solution from requirements"
-echo "  /aws-connect-update  — sync the reference docs with new AWS announcements"
+echo "Done. Restart Claude Code — skills and agents load at session start."

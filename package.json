@@ -1,0 +1,30 @@
+{
+  "name": "claude-packs",
+  "version": "1.0.0",
+  "description": "Install curated Claude Code skill & agent bundles for different stacks and technologies into a project or user config.",
+  "bin": {
+    "claude-packs": "bin/claude-packs.js"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "start": "node bin/claude-packs.js",
+    "test": "node bin/claude-packs.js list"
+  },
+  "files": [
+    "bin/",
+    "bundles/",
+    "README.md"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "skills",
+    "agents",
+    "cli",
+    "installer"
+  ],
+  "license": "MIT"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "aws-connect",
+  "title": "Amazon Connect",
+  "version": "1.0.0",
+  "description": "Build, debug, and design anything on Amazon Connect (AWS cloud contact center): contact flows, CCP/Streams/ChatJS frontends, Lambda/Lex/Q in Connect integrations, Contact Lens, contact-record & metrics pipelines, and CloudFormation/CDK/Terraform IaC.",
+  "tags": ["aws", "contact-center", "voice", "chat", "ivr", "lambda"],
+  "skills": [
+    "aws-connect",
+    "aws-connect-build",
+    "aws-connect-update"
+  ],
+  "agents": [
+    "aws-connect-architect",
+    "aws-connect-flow-builder",
+    "aws-connect-backend-dev",
+    "aws-connect-frontend-dev"
+  ]
+}

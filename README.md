@@ -1,88 +1,92 @@
-# Amazon Connect Skill for Claude Code
+# claude-packs
 
-A [Claude Code](https://claude.com/claude-code) skill pack for building anything on
-**Amazon Connect** (AWS cloud contact center): contact flows, CCP/Streams/ChatJS
-frontends, Lambda/Lex/Q in Connect integrations, Contact Lens, contact-record and
-metrics pipelines, and CloudFormation/CDK/Terraform IaC.
+A central registry of **[Claude Code](https://claude.com/claude-code) skill & agent
+bundles** for different stacks and technologies, plus a small CLI to install the ones
+you want — into a single project or your user config.
 
-The reference material was deep-researched from official AWS documentation
-(baseline: **2026-07**) and ships with an update workflow to keep it current as
-Amazon Connect evolves.
+Each **bundle** groups the skills and subagents for one stack (e.g. Amazon Connect).
+The CLI copies a bundle's skills into `<target>/.claude/skills/` and its agents into
+`<target>/.claude/agents/`, tracks what it installed, and can cleanly remove it later.
 
-## What's inside
+## Quick start
 
-```
-install.sh                           # installer (user-level or per-project)
-skills/
-├── aws-connect/                     # main skill (auto-activates on Connect tasks)
-│   ├── SKILL.md                     # entry point + routing table + hard-won rules
-│   ├── references/                  # ~2,900 lines of researched documentation
-│   │   ├── core-concepts.md         # instances, routing, queues, quotas, IAM
-│   │   ├── contact-flows.md         # flow language JSON, block catalog, attributes
-│   │   ├── apis-sdks.md             # all 10 API namespaces, TPS limits, code examples
-│   │   ├── frontend-streams.md      # CCP, Streams, ChatJS, chat widget, workspace apps
-│   │   ├── ai-integrations.md       # Lambda, Lex V2, Q in Connect / AI agents, Contact Lens
-│   │   ├── data-analytics.md        # CTRs, event streams, GetMetricDataV2, data lake
-│   │   ├── iac-devops.md            # CFN/CDK/Terraform, flow-content-as-code, CI/CD
-│   │   └── changelog.md             # notable Connect changes 2025-01 → 2026-07
-│   └── scripts/
-│       └── fetch-whats-new.sh       # pulls Connect announcements from AWS What's New
-├── aws-connect-build/               # /aws-connect-build — requirements → deployable package
-└── aws-connect-update/              # /aws-connect-update — refreshes the references
-agents/
-├── aws-connect-architect.md         # solution & routing design
-├── aws-connect-flow-builder.md      # authors/validates flow-language JSON
-├── aws-connect-backend-dev.md       # APIs, Lambdas, event/data pipelines
-└── aws-connect-frontend-dev.md      # CCP/Streams/ChatJS/workspace UIs
-```
-
-## Install
+Run it straight from GitHub — no clone, no global install (needs Node ≥ 16):
 
 ```bash
-git clone <this-repo-url>
-cd <repo>
-./install.sh              # user-level (~/.claude) — available in every project
+npx github:OWNER/REPO list                          # see available bundles
+npx github:OWNER/REPO install aws-connect           # into ~/.claude (all projects)
+npx github:OWNER/REPO install aws-connect --project .   # into ./.claude (this repo)
 ```
 
-Or install into a single project instead:
+Or install the CLI globally:
 
 ```bash
-./install.sh --project /path/to/your/project
+npm install -g github:OWNER/REPO
+claude-packs list
+claude-packs install aws-connect --project ~/my-app
 ```
 
-Other flags: `--force` (overwrite an existing install, e.g. when pulling a newer
-version of this repo), `--uninstall` (remove the skills/agents from the target;
-combine with `--project` for project installs).
+Or clone and use the bootstrap script (delegates to the CLI; has a Node-free fallback):
 
-Skills load at session start — restart Claude Code after installing.
+```bash
+git clone https://github.com/OWNER/REPO && cd REPO
+./install.sh install aws-connect            # user-level
+./install.sh install aws-connect --project . # per-project
+```
 
-## Use
+> Replace `OWNER/REPO` with this repository's path once it's pushed to GitHub.
 
-Just ask Claude Code for Amazon Connect work — the skill activates on its own
-(e.g. "build an inbound flow with a Lambda customer lookup", "embed a custom CCP
-in our React app", "set up a CTR → Athena pipeline"). Reference files are loaded
-selectively per task, and the specialized agents can be delegated to by name.
+Skills and agents load at session start — **restart Claude Code** after installing.
 
-## Generate a full solution
+## Commands
 
-Run `/aws-connect-build` to go from requirements to a deployable package. It
-interviews you (channels, routing, AI/self-service scope, integrations,
-environments), writes `REQUIREMENTS.md` and `DESIGN.md`, then generates:
-CloudFormation template(s), `flows/*.flow.json` with per-environment ARN
-placeholders, Lambda functions with tests, OpenAPI schemas for MCP tool
-integrations, AI prompt/agent definitions, per-env config, and an idempotent
-`deploy.sh` — plus explicit instructions for the steps AWS doesn't let you
-automate (number claiming, SAML setup, approved origins).
+```
+claude-packs list                    list bundles + install status
+claude-packs info <bundle>           show a bundle's skills, agents, description
+claude-packs install <bundle...>     install one or more bundles
+claude-packs uninstall <bundle...>   remove installed bundles (only files it added)
+claude-packs update [bundle...]      re-copy latest bundle content over installs
+claude-packs installed               list what's installed at the target
+```
 
-## Keep it current
+**Target flags** (apply to install/uninstall/update/list/installed):
 
-Run `/aws-connect-update` in Claude Code (monthly is a good cadence). It:
+| Flag | Target | Scope |
+| --- | --- | --- |
+| `--user` / `-u` *(default)* | `~/.claude` | every project on this machine |
+| `--project [dir]` / `-p` | `<dir>/.claude` (default: cwd) | that one project |
 
-1. reads the baseline date from `references/changelog.md`,
-2. fetches newer Amazon Connect announcements via `scripts/fetch-whats-new.sh`
-   (AWS What's New API) and the admin-guide doc history,
-3. researches significant changes and patches the affected reference files,
-4. prepends changelog entries and bumps the `> Last updated:` dates.
+Other flags: `--force`/`-f` (overwrite without prompting), `--help`, `--version`.
 
-Each reference file carries a `> Last updated:` line — treat quotas, pricing, and
-region availability newer than that date as facts to verify against live AWS docs.
+The CLI records installs in `<target>/.claude/.claude-packs.json`, so `uninstall`
+removes exactly the files a bundle added and leaves your other skills/agents untouched.
+It won't silently clobber an untracked skill/agent of the same name — it prompts (or
+skips in non-interactive mode unless `--force`).
+
+## Available bundles
+
+| Bundle | What it covers |
+| --- | --- |
+| **aws-connect** | Amazon Connect (AWS cloud contact center): contact flows & flow-language JSON, routing, CCP/Streams/ChatJS frontends, Lambda/Lex/Q in Connect integrations, Contact Lens, CTR & metrics pipelines, and CloudFormation/CDK/Terraform IaC. Ships 3 skills (incl. `/aws-connect-build` and `/aws-connect-update`) and 4 specialist agents. |
+
+Run `claude-packs info <bundle>` for the full skill/agent list of any bundle.
+
+## Repository layout
+
+```
+bin/claude-packs.js        # the CLI (zero dependencies, Node built-ins only)
+package.json               # bin entry + files whitelist for npx/npm install
+install.sh                 # bootstrap: delegates to the CLI, bash fallback if no Node
+bundles/
+└── aws-connect/
+    ├── bundle.json         # manifest: name, version, description, skills[], agents[]
+    ├── skills/             # one directory per skill (each with a SKILL.md)
+    └── agents/             # one <agent-name>.md per agent
+CONTRIBUTING.md            # how to add a new bundle
+```
+
+## Add a new bundle
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). In short: create `bundles/<name>/` with a
+`bundle.json`, drop your skills under `skills/` and agents under `agents/`, and the CLI
+picks it up automatically — no code changes needed.
