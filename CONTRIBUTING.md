@@ -9,12 +9,22 @@ by scanning `bundles/*/bundle.json` — you don't touch any CLI code to add one.
 ```
 bundles/<bundle-name>/
 ├── bundle.json            # manifest (required)
+├── GUIDE.md               # end-user walkthrough (optional, NOT installed)
 ├── skills/
 │   └── <skill-name>/
 │       └── SKILL.md       # + any references/, scripts/, assets the skill needs
 └── agents/
     └── <agent-name>.md
 ```
+
+**Only what's listed in `skills[]` and `agents[]` gets installed.** Anything else at the
+bundle root — guides, examples, notes, screenshots — stays in the registry and is never
+copied into a user's `.claude/`. That's the place for human-facing docs: they'd only
+burn context if they landed in `.claude/`. Point at one with the `guide` field and
+`claude-packs info <bundle>` will print its path.
+
+Note the boundary: a skill directory is copied **whole**, so anything you put inside
+`skills/<skill>/` *does* get installed. Docs go at the bundle root, not in a skill.
 
 - **`<bundle-name>`** is what users type: `claude-packs install <bundle-name>`.
 - Each entry in `skills[]` must match a directory under `skills/` containing a `SKILL.md`.
@@ -44,6 +54,7 @@ bundles/<bundle-name>/
 | `title` | no | Short human label. |
 | `description` | no | Shown by `info`/`list`. |
 | `tags` | no | Searchable keywords shown in `list`. |
+| `guide` | no | Path (relative to the bundle) to a user-facing guide; shown by `info`. Not installed. |
 | `skills` | no | Skill directory names; omit or `[]` for an agents-only bundle. |
 | `agents` | no | Agent file basenames (without `.md`). |
 

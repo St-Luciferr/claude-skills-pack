@@ -41,7 +41,13 @@ bundles researched reference material, specialized subagents, and an update work
 3. **Building a full solution from scratch?** Use the companion skill
    **`/aws-connect-build`** — it interviews the user for requirements, produces a
    design, and generates a deployable package (CloudFormation, flow JSON with ARN
-   placeholders, Lambdas, OpenAPI schemas for MCP tools, AI prompts, deploy.sh).
+   placeholders, Lambdas, OpenAPI schemas for MCP tools, AI prompts, agent roster +
+   provisioning script, deploy.sh).
+
+   **Deployed something that isn't behaving?** Use **`/aws-connect-verify`** — it checks
+   the wiring (flow published & associated to the number, Lambda/Lex associations,
+   routing profiles, agents, hours, logging), traces a contact through CloudWatch flow
+   logs by ContactId, and reads the CTR.
 
 4. **Trust but verify volatile facts.** Reference files carry a `> Last updated:` line.
    Quotas, region availability, pricing, and anything newer than that date should be

@@ -73,7 +73,7 @@ default `~/.claude-packs`), `CLAUDE_PACKS_BIN` (launcher dir, default `~/.local/
 
 ## Command reference
 
-```
+```bash
 claude-packs list                    list bundles + install status
 claude-packs info <bundle>           show a bundle's skills, agents, description
 claude-packs install <bundle...>     install one or more bundles
@@ -101,15 +101,19 @@ non-interactive mode unless `--force`).
 
 ## Available bundles
 
-| Bundle | What it covers |
-| --- | --- |
-| **aws-connect** | Amazon Connect (AWS cloud contact center): contact flows & flow-language JSON, routing, CCP/Streams/ChatJS frontends, Lambda/Lex/Q in Connect integrations, Contact Lens, CTR & metrics pipelines, and CloudFormation/CDK/Terraform IaC. Ships 3 skills (incl. `/aws-connect-build` and `/aws-connect-update`) and 4 specialist agents. |
+| Bundle | What it covers | Guide |
+| --- | --- | --- |
+| **aws-connect** | Amazon Connect (AWS cloud contact center): contact flows & flow-language JSON, routing, CCP/Streams/ChatJS frontends, Lambda/Lex/Q in Connect integrations, Contact Lens, CTR & metrics pipelines, and CloudFormation/CDK/Terraform IaC. Ships 4 skills (incl. `/aws-connect-build`, `/aws-connect-verify`, `/aws-connect-update`) and 4 specialist agents. | [Build a contact center from scratch](bundles/aws-connect/GUIDE.md) |
 
-Run `claude-packs info <bundle>` for the full skill/agent list of any bundle.
+Run `claude-packs info <bundle>` for the full skill/agent list, and the path to its guide.
+
+**Guides aren't installed.** A bundle's guide is documentation for *you* and stays in the
+registry (`~/.claude-packs/bundles/<name>/`) — only skills and agents are copied into
+`.claude/`, so guides never consume Claude's context.
 
 ## Repository layout
 
-```
+```tree
 install.sh                 # installs the CLI onto a device (curl-able); --uninstall removes it
 bin/claude-packs           # the CLI — pure bash, no runtime dependencies
 VERSION                    # CLI version

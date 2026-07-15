@@ -26,8 +26,11 @@ answers. Cover:
 1. **Channels**: voice / chat / tasks / email / SMS-WhatsApp; inbound, outbound, or both.
 2. **Instance**: create new via IaC, or target an existing instance (get instance
    alias/ID and region)? Identity model (Connect-native / SAML / directory)?
-3. **Routing**: queues, agent groups/hierarchies, business hours + timezone,
-   after-hours behavior, overflow/escalation rules, callbacks?
+3. **Routing & agents**: queues, business hours + timezone, after-hours behavior,
+   overflow/escalation rules, callbacks? Which agent groups exist, which queues does each
+   serve, and per-channel concurrency (voice is always 1; chat up to 10)? Where does the
+   agent roster come from — a checked-in file, an IdP/HR system, or hand-managed? (The
+   identity model from Q2 decides whether users need passwords at all.)
 4. **Self-service & AI**: IVR menu structure; Lex bot or Connect AI agents for
    self-service? Q in Connect agent assist? Which tasks should AI resolve without an
    agent, and what tools/data does it need (→ drives MCP tool schemas)?
@@ -71,7 +74,10 @@ Produce this layout (adapt names to the project):
 ├── ai-prompts/
 │   └── <name>.yaml               # Q in Connect AI prompt / AI agent definitions
 ├── config/
-│   └── dev.env, prod.env         # per-env: instance ARN/ID, region, KMS, prefixes
+│   ├── dev.env, prod.env         # per-env: instance ARN/ID, region, KMS, prefixes
+│   └── agents.yaml               # agent roster — operational data, not IaC
+├── scripts/
+│   └── provision-agents.sh       # idempotent roster → Connect reconciler
 └── deploy.sh
 ```
 
@@ -90,6 +96,34 @@ Generation rules (non-negotiable):
   / `AssociateLambdaFunction` for Lambdas, Lambda functions + least-privilege IAM,
   Kinesis/S3/Athena resources if the CTR pipeline is in scope. Note (don't fake)
   resources CFN can't manage.
+- **Agent provisioning** (`aws-connect-backend-dev` agent; `core-concepts.md` §Users +
+  §Routing, `apis-sdks.md` §Admin CRUD). Split by lifetime, not by convenience:
+  - **Infrastructure → CloudFormation**: security profiles, routing profiles, hierarchy
+    groups, queues, hours. Stable, few, shared.
+  - **Users → NOT CloudFormation.** `AWS::Connect::User` exists, but users churn: every
+    joiner becomes a stack deploy, console fixes surface as drift, and a stack delete
+    mass-offboards. Treat users and hierarchy assignments as operational data.
+  Generate `config/agents.yaml` (roster) + `scripts/provision-agents.sh` (idempotent
+  reconciler: `SearchUsers` → diff vs desired → `CreateUser` /
+  `UpdateUserRoutingProfile` / `UpdateUserSecurityProfiles` / `UpdateUserHierarchy`).
+  Non-negotiable:
+  - **Reference routing/security profiles and hierarchy by NAME, never by ID** — IDs
+    differ per instance, so a dev roster must replay against prod unchanged. Resolve
+    names→IDs at runtime (`SearchRoutingProfiles`, `ListSecurityProfiles`,
+    `ListUserHierarchyGroups`). This is the flow-ARN portability problem again.
+  - **Rate-limit to ≤2 TPS with exponential backoff on ThrottlingException.** Admin CRUD
+    is 2/5 TPS *shared account-wide per region* — a parallel loop just collects
+    throttles. 500 users (the default per-instance quota) takes 4+ minutes; that is
+    expected, not a bug. Never "speed it up" with concurrency.
+  - **Passwords**: SAML/directory → omit entirely, and the Connect username MUST equal
+    the IdP `RoleSessionName` **exactly, case-sensitive** (a mismatch fails at sign-in
+    with a misleading "session expired"). Connect-native → generate a random password
+    and force reset; never write one into the repo or the roster file.
+  - **`--dry-run` prints the diff and changes nothing**; make it the default for any env
+    whose name looks like prod.
+  - **Leavers**: report users present in Connect but absent from the roster. Do NOT
+    `DeleteUser` unless the user explicitly asked — deleting affects historical
+    reporting attribution; confirm the impact against live docs before automating it.
 - **Lambdas**: honor the flow-Lambda contract — respond < 8 s, flat string map (or
   JSON mode, then say so in the flow block), never throw for business "not found";
   include unit tests for the handler's happy path and timeout/error shape.
@@ -108,10 +142,13 @@ Generation rules (non-negotiable):
   `config/$ENV.env`. Order: package/upload Lambdas → `aws cloudformation deploy`
   → resolve real ARNs (by resource NAME lookups via `aws connect list-*`) →
   substitute placeholders into flow JSON (envsubst/jq) → `aws connect
-  update-contact-flow-content` per flow → create/update AI prompts & agents and
-  MCP tool registrations via CLI where CFN has no coverage → smoke checks
-  (describe each resource, validate flow content accepted). Print a post-deploy
-  checklist of the manual steps.
+  update-contact-flow-content` per flow → **publish** the flows (logs and runtime
+  only see published content) → **associate the inbound flow to the claimed number**
+  (`aws connect associate-phone-number-contact-flow` — CFN has no resource for this, so
+  without it the number rings into nothing) → create/update AI prompts & agents and
+  MCP tool registrations via CLI where CFN has no coverage → `scripts/provision-agents.sh`
+  → smoke checks (describe each resource, validate flow content accepted). Print a
+  post-deploy checklist of the manual steps.
 - Run whatever verification is cheap and available: `jq` every JSON artifact,
   `cfn-lint`/`aws cloudformation validate-template`, `shellcheck deploy.sh`,
   Lambda unit tests.
@@ -128,3 +165,8 @@ console-only AI agent features — generate instructions, not fake automation.
 Summarize: what was generated, how to deploy (`./deploy.sh dev`), what remains
 manual, and suggested next iteration (e.g. add CI pipeline per `iac-devops.md`
 promotion patterns).
+
+Point the user at **`/aws-connect-verify`** to confirm the deployment actually works
+(flow published & associated to the number, Lambda associations, agents on the right
+routing profile) and to trace a test contact through the flow logs. A deploy that
+succeeds is not the same as a contact center that answers.

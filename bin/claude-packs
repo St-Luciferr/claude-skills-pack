@@ -211,6 +211,16 @@ cmd_info() {
   [ -n "$desc" ] && { printf '\n'; printf '%s\n' "$desc" | fold -s -w 80; }
   [ -n "$tags" ] && printf '\n%stags:%s %s\n' "$DIM" "$RESET" "$tags"
 
+  # Guides live in the bundle and are not installed — point at them explicitly.
+  local guide guide_path
+  guide="$(manifest_scalar "$m" guide)"
+  if [ -n "$guide" ]; then
+    guide_path="${BUNDLES_DIR}/${name}/${guide}"
+    if [ -f "$guide_path" ]; then
+      printf '\n%sguide:%s %s\n' "$DIM" "$RESET" "$guide_path"
+    fi
+  fi
+
   local s a
   printf '\n%sSkills%s\n' "$BOLD" "$RESET"
   while IFS= read -r s; do
