@@ -8,37 +8,66 @@ Each **bundle** groups the skills and subagents for one stack (e.g. Amazon Conne
 The CLI copies a bundle's skills into `<target>/.claude/skills/` and its agents into
 `<target>/.claude/agents/`, tracks what it installed, and can cleanly remove it later.
 
-## Quick start
+## Install the CLI
 
-Run it straight from GitHub — no clone, no global install (needs Node ≥ 16):
-
-```bash
-npx github:OWNER/REPO list                          # see available bundles
-npx github:OWNER/REPO install aws-connect           # into ~/.claude (all projects)
-npx github:OWNER/REPO install aws-connect --project .   # into ./.claude (this repo)
-```
-
-Or install the CLI globally:
+One command, no clone needed:
 
 ```bash
-npm install -g github:OWNER/REPO
-claude-packs list
-claude-packs install aws-connect --project ~/my-app
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
 ```
 
-Or clone and use the bootstrap script (delegates to the CLI; has a Node-free fallback):
+Or from a clone:
 
 ```bash
-git clone https://github.com/OWNER/REPO && cd REPO
-./install.sh install aws-connect            # user-level
-./install.sh install aws-connect --project . # per-project
+git clone https://github.com/OWNER/REPO && cd REPO && ./install.sh
 ```
+
+This puts a managed copy of the registry in `~/.claude-packs` and a `claude-packs`
+command in `~/.local/bin` (the installer tells you if that's not on your `PATH`).
+
+**Requirements: bash and the usual coreutils — that's it.** No Node, no npm, no runtime
+to install. `git` is needed to install from a URL and to `self-update`. `jq` is used for
+manifest parsing when present, with an awk/sed fallback when it isn't. Works on bash 3.2,
+so stock macOS is fine.
 
 > Replace `OWNER/REPO` with this repository's path once it's pushed to GitHub.
 
+## Use it
+
+```bash
+claude-packs list                            # see available bundles
+claude-packs install aws-connect             # into ~/.claude (all projects)
+claude-packs install aws-connect --project . # into ./.claude (this project only)
+claude-packs update                          # refresh installed bundles
+claude-packs uninstall aws-connect           # remove a bundle
+claude-packs self-update                     # pull the latest CLI + bundles
+claude-packs self-uninstall                  # remove the CLI from this device
+```
+
 Skills and agents load at session start — **restart Claude Code** after installing.
 
-## Commands
+### Keeping up to date
+
+Two levels, deliberately separate:
+
+- `claude-packs self-update` — `git pull`s the registry in `~/.claude-packs`, so you get
+  new bundles and new versions of existing ones.
+- `claude-packs update` — copies that newer content into a target's `.claude`, upgrading
+  what you've already installed there. `list` flags installs that are behind
+  (`✓ installed (1.0.0 → 1.1.0 available)`).
+
+### Uninstalling
+
+- `claude-packs uninstall <bundle>` removes a bundle from a project or `~/.claude`.
+- `claude-packs self-uninstall` (or `./install.sh --uninstall`) removes the CLI and the
+  `~/.claude-packs` registry. It deliberately leaves bundles you installed into projects
+  alone — remove those first if you want them gone.
+
+**Environment overrides** (for the installer): `CLAUDE_PACKS_HOME` (registry location,
+default `~/.claude-packs`), `CLAUDE_PACKS_BIN` (launcher dir, default `~/.local/bin`),
+`CLAUDE_PACKS_REPO` (git URL to install from).
+
+## Command reference
 
 ```
 claude-packs list                    list bundles + install status
@@ -47,6 +76,8 @@ claude-packs install <bundle...>     install one or more bundles
 claude-packs uninstall <bundle...>   remove installed bundles (only files it added)
 claude-packs update [bundle...]      re-copy latest bundle content over installs
 claude-packs installed               list what's installed at the target
+claude-packs self-update             update the CLI + registry itself (git pull)
+claude-packs self-uninstall          remove the CLI from this device
 ```
 
 **Target flags** (apply to install/uninstall/update/list/installed):
@@ -58,10 +89,11 @@ claude-packs installed               list what's installed at the target
 
 Other flags: `--force`/`-f` (overwrite without prompting), `--help`, `--version`.
 
-The CLI records installs in `<target>/.claude/.claude-packs.json`, so `uninstall`
-removes exactly the files a bundle added and leaves your other skills/agents untouched.
-It won't silently clobber an untracked skill/agent of the same name — it prompts (or
-skips in non-interactive mode unless `--force`).
+The CLI records installs in a `<target>/.claude/.claude-packs` receipt (a simple
+tab-separated `bundle / version / kind / item` file), so `uninstall` removes exactly the
+files a bundle added and leaves your other skills/agents untouched. It won't silently
+clobber an untracked skill/agent of the same name — it prompts (or skips in
+non-interactive mode unless `--force`).
 
 ## Available bundles
 
@@ -74,9 +106,9 @@ Run `claude-packs info <bundle>` for the full skill/agent list of any bundle.
 ## Repository layout
 
 ```
-bin/claude-packs.js        # the CLI (zero dependencies, Node built-ins only)
-package.json               # bin entry + files whitelist for npx/npm install
-install.sh                 # bootstrap: delegates to the CLI, bash fallback if no Node
+install.sh                 # installs the CLI onto a device (curl-able); --uninstall removes it
+bin/claude-packs           # the CLI — pure bash, no runtime dependencies
+VERSION                    # CLI version
 bundles/
 └── aws-connect/
     ├── bundle.json         # manifest: name, version, description, skills[], agents[]

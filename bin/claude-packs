@@ -1,0 +1,505 @@
+#!/usr/bin/env bash
+# claude-packs — install Claude Code skill/agent bundles into a project or user config.
+#
+# Pure bash: no Node, no npm, no runtime dependencies. Works on bash 3.2 (macOS) and up.
+# Uses jq when available for manifest parsing, with an awk/sed fallback when it isn't.
+set -euo pipefail
+
+# --- locate the registry -------------------------------------------------------
+# When installed via install.sh the launcher exports CLAUDE_PACKS_HOME. Running from a
+# clone, fall back to the repo root relative to this script.
+if [ -n "${CLAUDE_PACKS_HOME:-}" ]; then
+  PKG_ROOT="$CLAUDE_PACKS_HOME"
+else
+  PKG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+BUNDLES_DIR="${PKG_ROOT}/bundles"
+RECEIPT=".claude-packs"   # per-target install receipt (TSV: bundle version kind item)
+
+if [ -n "${CLAUDE_PACKS_HOME:-}" ] || [ -n "${CLAUDE_PACKS_LAUNCHER:-}" ]; then
+  IS_MANAGED=1
+else
+  IS_MANAGED=0
+fi
+
+CLI_VERSION="$(cat "${PKG_ROOT}/VERSION" 2>/dev/null || echo '0.0.0')"
+
+# --- output --------------------------------------------------------------------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'; GREEN=$'\033[32m'
+  YELLOW=$'\033[33m'; CYAN=$'\033[36m'; RESET=$'\033[0m'
+else
+  BOLD=''; DIM=''; RED=''; GREEN=''; YELLOW=''; CYAN=''; RESET=''
+fi
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf '%serror:%s %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+warn() { printf '%swarning:%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
+
+confirm() { # $1=question -> 0 if yes
+  local q="$1" ans
+  [ -e /dev/tty ] || return 1
+  printf '%s [y/N] ' "$q" > /dev/tty 2>/dev/null || return 1
+  read -r ans < /dev/tty 2>/dev/null || return 1
+  case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# --- manifest parsing ----------------------------------------------------------
+have_jq() { command -v jq >/dev/null 2>&1; }
+
+manifest_scalar() { # $1=manifest $2=key
+  if have_jq; then
+    jq -r --arg k "$2" '.[$k] // empty' "$1" 2>/dev/null || true
+  else
+    # constrained fallback: one "key": "value" per line, no embedded quotes
+    sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$1" | head -n1
+  fi
+}
+
+manifest_array() { # $1=manifest $2=key -> one item per line
+  if have_jq; then
+    jq -r --arg k "$2" '(.[$k] // [])[]' "$1" 2>/dev/null || true
+  else
+    awk -v key="\"$2\"" '
+      index($0, key) && index($0, ":") { grab = 1 }
+      grab { buf = buf $0; if (index($0, "]")) grab = 0 }
+      END {
+        sub(/.*\[/, "", buf); sub(/\].*/, "", buf)
+        n = split(buf, a, ",")
+        for (i = 1; i <= n; i++) { gsub(/[[:space:]"]/, "", a[i]); if (a[i] != "") print a[i] }
+      }' "$1"
+  fi
+}
+
+list_bundle_names() {
+  [ -d "$BUNDLES_DIR" ] || return 0
+  local d
+  for d in "$BUNDLES_DIR"/*/; do
+    [ -f "${d}bundle.json" ] || continue
+    basename "$d"
+  done
+}
+
+bundle_manifest() { # $1=name
+  local m="${BUNDLES_DIR}/$1/bundle.json"
+  [ -f "$m" ] || die "unknown bundle \"$1\". Run \"claude-packs list\" to see what's available."
+  printf '%s\n' "$m"
+}
+
+bundle_version() { # $1=manifest
+  local v; v="$(manifest_scalar "$1" version)"
+  [ -n "$v" ] || v="0.0.0"
+  printf '%s\n' "$v"
+}
+
+# --- receipt (install tracking) -------------------------------------------------
+# Format: one TAB-separated line per installed item -> bundle<TAB>version<TAB>kind<TAB>item
+receipt_file() { printf '%s\n' "${1}/${RECEIPT}"; }
+
+receipt_version() { # $1=target $2=bundle
+  local f; f="$(receipt_file "$1")"
+  [ -f "$f" ] || return 0
+  awk -F'\t' -v b="$2" '$1 == b { print $2; exit }' "$f"
+}
+
+receipt_items() { # $1=target $2=bundle $3=kind
+  local f; f="$(receipt_file "$1")"
+  [ -f "$f" ] || return 0
+  awk -F'\t' -v b="$2" -v k="$3" '$1 == b && $3 == k { print $4 }' "$f"
+}
+
+receipt_owns() { # $1=target $2=bundle $3=kind $4=item
+  local f; f="$(receipt_file "$1")"
+  [ -f "$f" ] || return 1
+  awk -F'\t' -v b="$2" -v k="$3" -v i="$4" \
+    'BEGIN { rc = 1 } $1 == b && $3 == k && $4 == i { rc = 0 } END { exit rc }' "$f"
+}
+
+receipt_bundles() { # $1=target
+  local f; f="$(receipt_file "$1")"
+  [ -f "$f" ] || return 0
+  awk -F'\t' '!/^#/ && NF { print $1 }' "$f" | sort -u
+}
+
+receipt_drop() { # $1=target $2=bundle
+  local f tmp; f="$(receipt_file "$1")"
+  [ -f "$f" ] || return 0
+  tmp="${f}.tmp.$$"
+  awk -F'\t' -v b="$2" '$1 != b' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+receipt_add() { # $1=target $2=bundle $3=version $4=kind $5=item
+  local f; f="$(receipt_file "$1")"
+  mkdir -p "$1"
+  if [ ! -f "$f" ]; then
+    printf '# claude-packs install receipt — tracks what this tool installed. Do not edit.\n' > "$f"
+    printf '# bundle\tversion\tkind\titem\n' >> "$f"
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" >> "$f"
+}
+
+# --- target resolution ----------------------------------------------------------
+resolve_target() {
+  if [ -n "${OPT_PROJECT+x}" ]; then
+    local dir="${OPT_PROJECT:-$PWD}"
+    [ -d "$dir" ] || die "no such directory: $dir"
+    printf '%s\n' "$(cd "$dir" && pwd)/.claude"
+  else
+    printf '%s\n' "${HOME}/.claude"
+  fi
+}
+
+pretty_target() {
+  if [ "$1" = "${HOME}/.claude" ]; then
+    printf '%s\n' "~/.claude (user)"
+  else
+    printf '%s\n' "$(printf '%s' "$1" | sed "s|^${HOME}|~|")"
+  fi
+}
+
+# --- commands -------------------------------------------------------------------
+cmd_list() {
+  local names target
+  names="$(list_bundle_names)"
+  [ -n "$names" ] || { say "No bundles found in ${BUNDLES_DIR}."; return 0; }
+  target="$(resolve_target)"
+  printf '\n%sAvailable bundles%s%s  (installed status vs %s)%s\n\n' \
+    "$BOLD" "$RESET" "$DIM" "$(pretty_target "$target")" "$RESET"
+
+  local name m ver title tags nskills nagents inst badge
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    m="${BUNDLES_DIR}/${name}/bundle.json"
+    ver="$(bundle_version "$m")"
+    title="$(manifest_scalar "$m" title)"
+    tags="$(manifest_array "$m" tags | paste -sd, - | sed 's/,/, /g')"
+    nskills="$(manifest_array "$m" skills | grep -c . || true)"
+    nagents="$(manifest_array "$m" agents | grep -c . || true)"
+    inst="$(receipt_version "$target" "$name")"
+    if [ -n "$inst" ]; then
+      if [ "$inst" != "$ver" ]; then
+        badge="${GREEN}✓ installed${RESET}${DIM} (${inst} → ${ver} available)${RESET}"
+      else
+        badge="${GREEN}✓ installed${RESET}"
+      fi
+    else
+      badge="${DIM}not installed${RESET}"
+    fi
+    printf '  %s%s%s%s %sv%s%s  %s\n' "$BOLD" "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$badge"
+    [ -n "$title" ] && printf '    %s\n' "$title"
+    printf '%s    %s skills, %s agents%s' "$DIM" "$nskills" "$nagents" "$RESET"
+    [ -n "$tags" ] && printf '%s  ·  %s%s' "$DIM" "$tags" "$RESET"
+    printf '\n'
+  done <<EOF
+$names
+EOF
+  printf '\n%sInstall with:%s claude-packs install <bundle> [--user | --project [dir]]\n\n' "$DIM" "$RESET"
+}
+
+cmd_info() {
+  [ "${#BUNDLE_ARGS[@]}" -gt 0 ] || die "usage: claude-packs info <bundle>"
+  local name m ver title desc tags
+  name="${BUNDLE_ARGS[0]}"
+  m="$(bundle_manifest "$name")"
+  ver="$(bundle_version "$m")"
+  title="$(manifest_scalar "$m" title)"
+  desc="$(manifest_scalar "$m" description)"
+  tags="$(manifest_array "$m" tags | paste -sd, - | sed 's/,/, /g')"
+
+  printf '\n%s%s%s%s  v%s%s\n' "$BOLD" "$CYAN" "$name" "$DIM" "$ver" "$RESET"
+  [ -n "$title" ] && printf '%s%s%s\n' "$BOLD" "$title" "$RESET"
+  [ -n "$desc" ] && { printf '\n'; printf '%s\n' "$desc" | fold -s -w 80; }
+  [ -n "$tags" ] && printf '\n%stags:%s %s\n' "$DIM" "$RESET" "$tags"
+
+  local s a
+  printf '\n%sSkills%s\n' "$BOLD" "$RESET"
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    printf '  %s•%s %s\n' "$GREEN" "$RESET" "$s"
+  done <<EOF
+$(manifest_array "$m" skills)
+EOF
+  printf '\n%sAgents%s\n' "$BOLD" "$RESET"
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    printf '  %s•%s %s\n' "$GREEN" "$RESET" "$a"
+  done <<EOF
+$(manifest_array "$m" agents)
+EOF
+  printf '\n'
+}
+
+install_one() { # $1=bundle name, $2=target
+  local name="$1" target="$2" m ver bdir src dest s a
+  m="$(bundle_manifest "$name")"
+  ver="$(bundle_version "$m")"
+  bdir="${BUNDLES_DIR}/${name}"
+
+  printf '\n%sInstalling %s%s%s%s v%s → %s%s\n' \
+    "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$ver" "$(pretty_target "$target")" "$RESET"
+
+  mkdir -p "${target}/skills" "${target}/agents"
+
+  # collect first, so a declined overwrite doesn't leave a half-written receipt
+  local ok_skills='' ok_agents=''
+
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    src="${bdir}/skills/${s}"
+    dest="${target}/skills/${s}"
+    if [ ! -d "$src" ]; then warn "skill \"$s\" missing from bundle, skipping"; continue; fi
+    if [ -e "$dest" ] && [ "$OPT_FORCE" -ne 1 ] && ! receipt_owns "$target" "$name" skill "$s"; then
+      if ! confirm "  ${dest} exists and is not tracked by claude-packs. Overwrite?"; then
+        printf '  %s- skipped skill %s%s\n' "$DIM" "$s" "$RESET"; continue
+      fi
+    fi
+    rm -rf "$dest"
+    cp -R "$src" "$dest"
+    ok_skills="${ok_skills}${s}
+"
+    printf '  %s+%s skill %s\n' "$GREEN" "$RESET" "$s"
+  done <<EOF
+$(manifest_array "$m" skills)
+EOF
+
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    src="${bdir}/agents/${a}.md"
+    dest="${target}/agents/${a}.md"
+    if [ ! -f "$src" ]; then warn "agent \"$a\" missing from bundle, skipping"; continue; fi
+    if [ -e "$dest" ] && [ "$OPT_FORCE" -ne 1 ] && ! receipt_owns "$target" "$name" agent "$a"; then
+      if ! confirm "  ${dest} exists and is not tracked by claude-packs. Overwrite?"; then
+        printf '  %s- skipped agent %s%s\n' "$DIM" "$a" "$RESET"; continue
+      fi
+    fi
+    cp "$src" "$dest"
+    ok_agents="${ok_agents}${a}
+"
+    printf '  %s+%s agent %s\n' "$GREEN" "$RESET" "$a"
+  done <<EOF
+$(manifest_array "$m" agents)
+EOF
+
+  receipt_drop "$target" "$name"
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    receipt_add "$target" "$name" "$ver" skill "$s"
+  done <<EOF
+$ok_skills
+EOF
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    receipt_add "$target" "$name" "$ver" agent "$a"
+  done <<EOF
+$ok_agents
+EOF
+}
+
+cmd_install() {
+  [ "${#BUNDLE_ARGS[@]}" -gt 0 ] || \
+    die "usage: claude-packs install <bundle...> [--user | --project [dir]] [--force]"
+  local target name
+  target="$(resolve_target)"
+  for name in "${BUNDLE_ARGS[@]}"; do
+    install_one "$name" "$target"
+  done
+  printf '\n%s✓ Done.%s Restart Claude Code — skills and agents load at session start.\n\n' \
+    "$GREEN" "$RESET"
+}
+
+cmd_uninstall() {
+  [ "${#BUNDLE_ARGS[@]}" -gt 0 ] || \
+    die "usage: claude-packs uninstall <bundle...> [--user | --project [dir]]"
+  local target name p changed=0
+  target="$(resolve_target)"
+  for name in "${BUNDLE_ARGS[@]}"; do
+    if [ -z "$(receipt_version "$target" "$name")" ]; then
+      printf '  %s%s is not installed at %s%s\n' "$YELLOW" "$name" "$(pretty_target "$target")" "$RESET"
+      continue
+    fi
+    printf '\n%sRemoving %s%s%s%s from %s%s\n' \
+      "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$(pretty_target "$target")" "$RESET"
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if [ -e "${target}/skills/${p}" ]; then
+        rm -rf "${target}/skills/${p}"
+        printf '  %s-%s skill %s\n' "$RED" "$RESET" "$p"
+      fi
+    done <<EOF
+$(receipt_items "$target" "$name" skill)
+EOF
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if [ -e "${target}/agents/${p}.md" ]; then
+        rm -f "${target}/agents/${p}.md"
+        printf '  %s-%s agent %s\n' "$RED" "$RESET" "$p"
+      fi
+    done <<EOF
+$(receipt_items "$target" "$name" agent)
+EOF
+    receipt_drop "$target" "$name"
+    changed=1
+  done
+  [ "$changed" -eq 1 ] && printf '\n%s✓ Uninstalled.%s\n\n' "$GREEN" "$RESET"
+  return 0
+}
+
+cmd_update() {
+  local target names
+  target="$(resolve_target)"
+  if [ "${#BUNDLE_ARGS[@]}" -gt 0 ]; then
+    names="$(printf '%s\n' "${BUNDLE_ARGS[@]}")"
+  else
+    names="$(receipt_bundles "$target")"
+  fi
+  if [ -z "$names" ]; then
+    say "Nothing installed at $(pretty_target "$target")."
+    return 0
+  fi
+  printf '%sRe-installing latest bundle content over existing installs...%s\n' "$DIM" "$RESET"
+  OPT_FORCE=1
+  local name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    install_one "$name" "$target"
+  done <<EOF
+$names
+EOF
+  printf '\n%s✓ Done.%s Restart Claude Code — skills and agents load at session start.\n\n' \
+    "$GREEN" "$RESET"
+}
+
+cmd_installed() {
+  local target names name ver ns na
+  target="$(resolve_target)"
+  names="$(receipt_bundles "$target")"
+  if [ -z "$names" ]; then
+    say "No bundles installed at $(pretty_target "$target")."
+    return 0
+  fi
+  printf '\n%sInstalled at %s:%s\n\n' "$BOLD" "$(pretty_target "$target")" "$RESET"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    ver="$(receipt_version "$target" "$name")"
+    ns="$(receipt_items "$target" "$name" skill | grep -c . || true)"
+    na="$(receipt_items "$target" "$name" agent | grep -c . || true)"
+    printf '  %s%s%s %sv%s%s  %s(%s skills, %s agents)%s\n' \
+      "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$DIM" "$ns" "$na" "$RESET"
+  done <<EOF
+$names
+EOF
+  printf '\n'
+}
+
+cmd_self_update() {
+  if [ ! -d "${PKG_ROOT}/.git" ]; then
+    die "can't self-update: ${PKG_ROOT} is not a git checkout.
+Re-run the installer to update to the latest version:
+  curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash"
+  fi
+  command -v git >/dev/null 2>&1 || die "git is required for self-update."
+  printf '%sUpdating claude-packs registry in %s ...%s\n' "$DIM" "$PKG_ROOT" "$RESET"
+  git -C "$PKG_ROOT" pull --ff-only || die "git pull failed."
+  printf '\n%s✓ claude-packs updated.%s Run %sclaude-packs update%s to push newer bundle content into your installs.\n\n' \
+    "$GREEN" "$RESET" "$CYAN" "$RESET"
+}
+
+cmd_self_uninstall() {
+  if [ "$IS_MANAGED" -ne 1 ]; then
+    die "self-uninstall only works for a device-installed CLI, not a dev clone.
+This looks like a source checkout — nothing to remove."
+  fi
+  printf '\n%sThis removes the claude-packs CLI from your device:%s\n' "$BOLD" "$RESET"
+  printf '  %s%s  (registry + bundles)%s\n' "$PKG_ROOT" "$DIM" "$RESET"
+  [ -n "${CLAUDE_PACKS_LAUNCHER:-}" ] && \
+    printf '  %s%s  (launcher on your PATH)%s\n' "$CLAUDE_PACKS_LAUNCHER" "$DIM" "$RESET"
+  printf '%s\nBundles already installed into your projects / ~/.claude are NOT touched.%s\n' "$DIM" "$RESET"
+
+  if [ "$OPT_FORCE" -ne 1 ] && ! confirm $'\nProceed?'; then
+    say "Aborted."; return 0
+  fi
+  if [ -n "${CLAUDE_PACKS_LAUNCHER:-}" ] && [ -e "$CLAUDE_PACKS_LAUNCHER" ]; then
+    rm -f "$CLAUDE_PACKS_LAUNCHER"
+    printf '%s-%s %s\n' "$RED" "$RESET" "$CLAUDE_PACKS_LAUNCHER"
+  fi
+  # safety: only remove PKG_ROOT if it really is a managed registry
+  if [ -f "${PKG_ROOT}/bin/claude-packs" ]; then
+    rm -rf "$PKG_ROOT"
+    printf '%s-%s %s\n' "$RED" "$RESET" "$PKG_ROOT"
+  fi
+  printf '\n%s✓ claude-packs removed.%s\n\n' "$GREEN" "$RESET"
+}
+
+usage() {
+  cat <<EOF
+
+${BOLD}claude-packs${RESET} ${DIM}v${CLI_VERSION}${RESET} — install Claude Code skill/agent bundles
+
+${BOLD}Usage${RESET}
+  claude-packs <command> [bundles...] [options]
+
+${BOLD}Commands${RESET}
+  ${CYAN}list${RESET}                       list available bundles and install status
+  ${CYAN}info${RESET} <bundle>              show a bundle's skills, agents, and description
+  ${CYAN}install${RESET} <bundle...>        install one or more bundles
+  ${CYAN}uninstall${RESET} <bundle...>      remove installed bundles
+  ${CYAN}update${RESET} [bundle...]         re-copy latest bundle content over installs
+  ${CYAN}installed${RESET}                  list bundles installed at the target
+  ${CYAN}self-update${RESET}                update the claude-packs CLI itself (git pull)
+  ${CYAN}self-uninstall${RESET}             remove the claude-packs CLI from this device
+
+${BOLD}Options${RESET}
+  -u, --user                 install into ~/.claude  ${DIM}(default; all projects)${RESET}
+  -p, --project [dir]        install into <dir>/.claude  ${DIM}(default dir: cwd)${RESET}
+  -f, --force                overwrite without prompting
+  -h, --help                 show this help
+  -V, --version              print version
+
+${BOLD}Examples${RESET}
+  claude-packs list
+  claude-packs install aws-connect --user
+  claude-packs install aws-connect --project .
+  claude-packs uninstall aws-connect --project ~/my-app
+  claude-packs self-update
+
+${DIM}registry: ${PKG_ROOT}${RESET}
+EOF
+}
+
+# --- arg parsing ----------------------------------------------------------------
+OPT_FORCE=0
+BUNDLE_ARGS=()
+COMMAND=''
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -u|--user) unset OPT_PROJECT 2>/dev/null || true; shift ;;
+    -p|--project)
+      shift
+      if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then OPT_PROJECT="$1"; shift; else OPT_PROJECT=""; fi
+      ;;
+    -f|--force) OPT_FORCE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -V|--version) printf '%s\n' "$CLI_VERSION"; exit 0 ;;
+    -*) die "unknown option: $1 (see --help)" ;;
+    *)
+      if [ -z "$COMMAND" ]; then COMMAND="$1"; else BUNDLE_ARGS[${#BUNDLE_ARGS[@]}]="$1"; fi
+      shift
+      ;;
+  esac
+done
+
+[ -n "$COMMAND" ] || { usage; exit 0; }
+
+case "$COMMAND" in
+  help)                usage ;;
+  list|ls)             cmd_list ;;
+  info|show)           cmd_info ;;
+  install|add)         cmd_install ;;
+  uninstall|remove|rm) cmd_uninstall ;;
+  update|upgrade)      cmd_update ;;
+  installed)           cmd_installed ;;
+  self-update)         cmd_self_update ;;
+  self-uninstall)      cmd_self_uninstall ;;
+  *) die "unknown command \"$COMMAND\". Run \"claude-packs --help\"." ;;
+esac

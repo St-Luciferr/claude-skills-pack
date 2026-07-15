@@ -1,101 +1,119 @@
 #!/usr/bin/env bash
-# Bootstrap installer for claude-packs — Claude Code skill/agent bundles.
+# claude-packs installer — installs the `claude-packs` CLI onto this device.
 #
-# Preferred usage (from a clone of this repo):
-#   ./install.sh <command> [bundles...] [options]     # forwards to the claude-packs CLI
+# Install (from a clone):
+#   ./install.sh
 #
-# Examples:
-#   ./install.sh list
-#   ./install.sh install aws-connect                  # user-level (~/.claude)
-#   ./install.sh install aws-connect --project .      # into ./.claude
-#   ./install.sh uninstall aws-connect
+# Install (no clone needed):
+#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
 #
-# If Node.js is available this delegates to bin/claude-packs.js (full-featured).
-# Without Node it falls back to a plain bash copy of the requested bundle(s).
+# Remove the CLI:
+#   ./install.sh --uninstall        (or: claude-packs self-uninstall)
 #
-# You can also skip cloning entirely and run the CLI straight from GitHub:
-#   npx github:OWNER/REPO install aws-connect
+# What it does:
+#   1. puts a managed copy of the registry (CLI + bundles) in ~/.claude-packs
+#   2. writes a `claude-packs` launcher into ~/.local/bin (must be on your PATH)
+#
+# Requirements: bash + coreutils/awk. No Node, no npm. git is needed to install from
+# a remote URL and for `claude-packs self-update`.
+# Afterwards, manage bundles with the installed command:
+#   claude-packs list | install <bundle> | update | uninstall <bundle>
+#
+# Environment overrides:
+#   CLAUDE_PACKS_HOME   registry location   (default: ~/.claude-packs)
+#   CLAUDE_PACKS_BIN    launcher directory  (default: ~/.local/bin)
+#   CLAUDE_PACKS_REPO   git URL to install from
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLI="${REPO_ROOT}/bin/claude-packs.js"
+REPO_URL="${CLAUDE_PACKS_REPO:-https://github.com/OWNER/REPO.git}"
+HOME_DIR="${CLAUDE_PACKS_HOME:-$HOME/.claude-packs}"
+BIN_DIR="${CLAUDE_PACKS_BIN:-$HOME/.local/bin}"
+LAUNCHER="${BIN_DIR}/claude-packs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo '')"
 
-# --- Prefer the Node CLI ------------------------------------------------------
-if command -v node >/dev/null 2>&1 && [[ -f "$CLI" ]]; then
-  exec node "$CLI" "$@"
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# --- uninstall ----------------------------------------------------------------
+if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
+  removed=0
+  [[ -e "$LAUNCHER" ]] && { rm -f "$LAUNCHER"; say "removed ${LAUNCHER}"; removed=1; }
+  [[ -d "$HOME_DIR" ]] && { rm -rf "$HOME_DIR"; say "removed ${HOME_DIR}"; removed=1; }
+  [[ $removed -eq 0 ]] && say "Nothing to remove (no install found)."
+  say
+  say "claude-packs CLI removed. Bundles already installed into your projects"
+  say "or ~/.claude are untouched — remove those with 'claude-packs uninstall' first."
+  exit 0
 fi
 
-# --- Bash fallback (no Node) ---------------------------------------------------
-echo "Node.js not found — using the bash fallback installer." >&2
-echo "(Install Node.js for list/info/uninstall/update and multi-bundle support.)" >&2
-echo >&2
+# --- prerequisites ------------------------------------------------------------
+# The CLI is pure bash — no Node, no npm. Only coreutils + awk are needed to run it;
+# git is needed to install from a remote and to self-update.
 
-BUNDLES_DIR="${REPO_ROOT}/bundles"
-TARGET="${HOME}/.claude"
-FORCE=0
-BUNDLES=()
+# --- fetch the registry into HOME_DIR ------------------------------------------
+have_local() { [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/bin/claude-packs" && -d "${SCRIPT_DIR}/bundles" ]]; }
+have_remote() { command -v git >/dev/null 2>&1 && [[ "$REPO_URL" != *OWNER/REPO* ]]; }
 
-# Parse a reduced arg set: [install] <bundle...> [--project [dir]] [--force]
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    install|add) shift ;;
-    --project|-p)
-      shift
-      if [[ $# -gt 0 && "$1" != -* ]]; then TARGET="$(cd "$1" && pwd)/.claude"; shift
-      else TARGET="$(pwd)/.claude"; fi
-      ;;
-    --user|-u) TARGET="${HOME}/.claude"; shift ;;
-    --force|-f) FORCE=1; shift ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -20; exit 0 ;;
-    -*) echo "Unknown option: $1" >&2; exit 1 ;;
-    *) BUNDLES+=("$1"); shift ;;
+if [[ -d "${HOME_DIR}/.git" ]] && have_remote; then
+  say "Updating existing registry in ${HOME_DIR} ..."
+  git -C "$HOME_DIR" pull --ff-only || say "warning: git pull failed — keeping existing content"
+elif have_remote; then
+  say "Cloning ${REPO_URL} -> ${HOME_DIR} ..."
+  rm -rf "$HOME_DIR"
+  git clone --depth 1 "$REPO_URL" "$HOME_DIR" >/dev/null 2>&1 || die "git clone failed from ${REPO_URL}"
+elif have_local; then
+  say "Copying local checkout -> ${HOME_DIR} ..."
+  rm -rf "$HOME_DIR"
+  mkdir -p "$HOME_DIR"
+  cp -R "${SCRIPT_DIR}/bin" "${SCRIPT_DIR}/bundles" "$HOME_DIR/"
+  cp "${SCRIPT_DIR}/VERSION" "$HOME_DIR/" 2>/dev/null || true
+  cp "${SCRIPT_DIR}/README.md" "$HOME_DIR/" 2>/dev/null || true
+  say "note: installed from a local copy — 'claude-packs self-update' needs a git"
+  say "      remote. Set CLAUDE_PACKS_REPO once this repo is pushed to GitHub."
+else
+  die "can't find the registry. Run this from a clone, or set CLAUDE_PACKS_REPO to the git URL."
+fi
+
+[[ -f "${HOME_DIR}/bin/claude-packs" ]] || die "install looks incomplete: ${HOME_DIR}/bin/claude-packs missing"
+chmod +x "${HOME_DIR}/bin/claude-packs" 2>/dev/null || true
+
+# --- write the launcher --------------------------------------------------------
+mkdir -p "$BIN_DIR"
+cat > "$LAUNCHER" <<EOF
+#!/usr/bin/env bash
+# claude-packs launcher (generated by install.sh — do not edit)
+export CLAUDE_PACKS_HOME="${HOME_DIR}"
+export CLAUDE_PACKS_LAUNCHER="${LAUNCHER}"
+exec "${HOME_DIR}/bin/claude-packs" "\$@"
+EOF
+chmod +x "$LAUNCHER"
+
+say
+say "✓ Installed claude-packs $(cat "${HOME_DIR}/VERSION" 2>/dev/null || echo '')"
+say "  registry: ${HOME_DIR}"
+say "  command:  ${LAUNCHER}"
+
+# --- PATH guidance -------------------------------------------------------------
+case ":${PATH}:" in
+  *":${BIN_DIR}:"*) ON_PATH=1 ;;
+  *) ON_PATH=0 ;;
+esac
+
+if [[ $ON_PATH -eq 0 ]]; then
+  case "${SHELL:-}" in
+    */zsh) PROFILE="~/.zshrc" ;;
+    */bash) PROFILE="~/.bashrc" ;;
+    *) PROFILE="your shell profile" ;;
   esac
-done
-
-if [[ ${#BUNDLES[@]} -eq 0 ]]; then
-  echo "Available bundles:" >&2
-  for d in "${BUNDLES_DIR}"/*/; do [[ -f "${d}bundle.json" ]] && echo "  - $(basename "$d")" >&2; done
-  echo >&2
-  echo "Usage: ./install.sh install <bundle...> [--project [dir]] [--force]" >&2
-  exit 1
+  say
+  say "⚠ ${BIN_DIR} is not on your PATH. Add it to ${PROFILE}:"
+  say "    export PATH=\"${BIN_DIR}:\$PATH\""
+  say "  then restart your shell (or run: export PATH=\"${BIN_DIR}:\$PATH\")"
 fi
 
-# Minimal JSON list extraction (no jq dependency): pull "skills" / "agents" arrays.
-json_array() { # $1=file $2=key
-  awk -v key="\"$2\"" '
-    $0 ~ key"[[:space:]]*:" { grab=1 }
-    grab { buf = buf $0; if ($0 ~ /\]/) { grab=0 } }
-    END {
-      sub(/.*\[/, "", buf); sub(/\].*/, "", buf)
-      n = split(buf, a, ",")
-      for (i=1;i<=n;i++) { gsub(/[[:space:]"]/, "", a[i]); if (a[i] != "") print a[i] }
-    }' "$1"
-}
-
-mkdir -p "${TARGET}/skills" "${TARGET}/agents"
-
-for bundle in "${BUNDLES[@]}"; do
-  bdir="${BUNDLES_DIR}/${bundle}"
-  manifest="${bdir}/bundle.json"
-  if [[ ! -f "$manifest" ]]; then echo "Unknown bundle: ${bundle}" >&2; exit 1; fi
-  echo "Installing ${bundle} -> ${TARGET}"
-
-  while IFS= read -r s; do
-    [[ -z "$s" ]] && continue
-    src="${bdir}/skills/${s}"; dest="${TARGET}/skills/${s}"
-    [[ ! -d "$src" ]] && { echo "  ! skill ${s} missing, skipping"; continue; }
-    if [[ -e "$dest" && $FORCE -ne 1 ]]; then echo "  - skill ${s} exists (use --force)"; continue; fi
-    rm -rf "$dest"; cp -R "$src" "$dest"; echo "  + skill ${s}"
-  done < <(json_array "$manifest" skills)
-
-  while IFS= read -r a; do
-    [[ -z "$a" ]] && continue
-    src="${bdir}/agents/${a}.md"; dest="${TARGET}/agents/${a}.md"
-    [[ ! -f "$src" ]] && { echo "  ! agent ${a} missing, skipping"; continue; }
-    if [[ -e "$dest" && $FORCE -ne 1 ]]; then echo "  - agent ${a} exists (use --force)"; continue; fi
-    cp "$src" "$dest"; echo "  + agent ${a}"
-  done < <(json_array "$manifest" agents)
-done
-
-echo
-echo "Done. Restart Claude Code — skills and agents load at session start."
+say
+say "Next steps:"
+say "  claude-packs list                          # see available bundles"
+say "  claude-packs install aws-connect           # into ~/.claude (all projects)"
+say "  claude-packs install aws-connect -p .      # into ./.claude (this project)"
+say "  claude-packs self-update                   # pull newer bundles later"
