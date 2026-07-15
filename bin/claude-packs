@@ -395,7 +395,7 @@ cmd_self_update() {
   if [ ! -d "${PKG_ROOT}/.git" ]; then
     die "can't self-update: ${PKG_ROOT} is not a git checkout.
 Re-run the installer to update to the latest version:
-  curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash"
+  curl -fsSL https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh | bash"
   fi
   command -v git >/dev/null 2>&1 || die "git is required for self-update."
   printf '%sUpdating claude-packs registry in %s ...%s\n' "$DIM" "$PKG_ROOT" "$RESET"

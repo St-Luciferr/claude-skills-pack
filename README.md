@@ -13,13 +13,14 @@ The CLI copies a bundle's skills into `<target>/.claude/skills/` and its agents 
 One command, no clone needed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh | bash
 ```
 
 Or from a clone:
 
 ```bash
-git clone https://github.com/OWNER/REPO && cd REPO && ./install.sh
+git clone https://github.com/St-Luciferr/claude-skills-pack
+cd claude-skills-pack && ./install.sh
 ```
 
 This puts a managed copy of the registry in `~/.claude-packs` and a `claude-packs`
@@ -30,7 +31,10 @@ to install. `git` is needed to install from a URL and to `self-update`. `jq` is 
 manifest parsing when present, with an awk/sed fallback when it isn't. Works on bash 3.2,
 so stock macOS is fine.
 
-> Replace `OWNER/REPO` with this repository's path once it's pushed to GitHub.
+Both forms above install the **published** repo, so you get a git-backed registry that
+`claude-packs self-update` can pull into. Contributors testing local changes should run
+`./install.sh --local` to install the checkout they're sitting in instead (self-update is
+then unavailable, since there's no git remote behind it).
 
 ## Use it
 

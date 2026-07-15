@@ -5,7 +5,10 @@
 #   ./install.sh
 #
 # Install (no clone needed):
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh | bash
+#
+# Install this checkout instead of cloning from GitHub (for contributors):
+#   ./install.sh --local
 #
 # Remove the CLI:
 #   ./install.sh --uninstall        (or: claude-packs self-uninstall)
@@ -25,7 +28,7 @@
 #   CLAUDE_PACKS_REPO   git URL to install from
 set -euo pipefail
 
-REPO_URL="${CLAUDE_PACKS_REPO:-https://github.com/OWNER/REPO.git}"
+REPO_URL="${CLAUDE_PACKS_REPO:-https://github.com/St-Luciferr/claude-skills-pack.git}"
 HOME_DIR="${CLAUDE_PACKS_HOME:-$HOME/.claude-packs}"
 BIN_DIR="${CLAUDE_PACKS_BIN:-$HOME/.local/bin}"
 LAUNCHER="${BIN_DIR}/claude-packs"
@@ -33,6 +36,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo '')
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# --- args ----------------------------------------------------------------------
+USE_LOCAL=0
+if [[ "${1:-}" == "--local" ]]; then USE_LOCAL=1; shift; fi
 
 # --- uninstall ----------------------------------------------------------------
 if [[ "${1:-}" == "--uninstall" || "${1:-}" == "uninstall" ]]; then
@@ -51,27 +58,37 @@ fi
 # git is needed to install from a remote and to self-update.
 
 # --- fetch the registry into HOME_DIR ------------------------------------------
-have_local() { [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/bin/claude-packs" && -d "${SCRIPT_DIR}/bundles" ]]; }
-have_remote() { command -v git >/dev/null 2>&1 && [[ "$REPO_URL" != *OWNER/REPO* ]]; }
+have_local()  { [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/bin/claude-packs" && -d "${SCRIPT_DIR}/bundles" ]]; }
+have_git()    { command -v git >/dev/null 2>&1; }
 
-if [[ -d "${HOME_DIR}/.git" ]] && have_remote; then
-  say "Updating existing registry in ${HOME_DIR} ..."
-  git -C "$HOME_DIR" pull --ff-only || say "warning: git pull failed — keeping existing content"
-elif have_remote; then
-  say "Cloning ${REPO_URL} -> ${HOME_DIR} ..."
-  rm -rf "$HOME_DIR"
-  git clone --depth 1 "$REPO_URL" "$HOME_DIR" >/dev/null 2>&1 || die "git clone failed from ${REPO_URL}"
-elif have_local; then
+install_local() { # copy the checkout we're running from; no .git, so no self-update
   say "Copying local checkout -> ${HOME_DIR} ..."
   rm -rf "$HOME_DIR"
   mkdir -p "$HOME_DIR"
   cp -R "${SCRIPT_DIR}/bin" "${SCRIPT_DIR}/bundles" "$HOME_DIR/"
   cp "${SCRIPT_DIR}/VERSION" "$HOME_DIR/" 2>/dev/null || true
   cp "${SCRIPT_DIR}/README.md" "$HOME_DIR/" 2>/dev/null || true
-  say "note: installed from a local copy — 'claude-packs self-update' needs a git"
-  say "      remote. Set CLAUDE_PACKS_REPO once this repo is pushed to GitHub."
+  say "note: installed from a local copy — 'claude-packs self-update' is unavailable"
+  say "      (re-run install.sh without --local to switch to a git-backed install)."
+}
+
+if [[ $USE_LOCAL -eq 1 ]]; then
+  have_local || die "--local needs to run from a checkout containing bin/claude-packs and bundles/"
+  install_local
+elif [[ -d "${HOME_DIR}/.git" ]] && have_git; then
+  say "Updating existing registry in ${HOME_DIR} ..."
+  git -C "$HOME_DIR" pull --ff-only || say "warning: git pull failed — keeping existing content"
+elif have_git; then
+  say "Cloning ${REPO_URL} -> ${HOME_DIR} ..."
+  rm -rf "$HOME_DIR"
+  git clone --depth 1 "$REPO_URL" "$HOME_DIR" >/dev/null 2>&1 \
+    || die "git clone failed from ${REPO_URL}
+If you meant to install this checkout instead, re-run: ./install.sh --local"
+elif have_local; then
+  say "warning: git not found — falling back to this checkout."
+  install_local
 else
-  die "can't find the registry. Run this from a clone, or set CLAUDE_PACKS_REPO to the git URL."
+  die "can't find the registry. Install git, run this from a clone, or set CLAUDE_PACKS_REPO."
 fi
 
 [[ -f "${HOME_DIR}/bin/claude-packs" ]] || die "install looks incomplete: ${HOME_DIR}/bin/claude-packs missing"

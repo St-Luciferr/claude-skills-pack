@@ -65,6 +65,9 @@ bundles/<bundle-name>/
    ./bin/claude-packs install <name> --project /tmp/try   # inspect /tmp/try/.claude
    ./bin/claude-packs uninstall <name> --project /tmp/try
    ```
+   To exercise the real installed command against your local changes, use
+   `./install.sh --local` — plain `./install.sh` clones the published repo and would
+   ignore your working tree.
 4. Add a row to the "Available bundles" table in `README.md`.
 5. Bump `version` in the bundle's `bundle.json` so existing installs are flagged as
    outdated by `list` and picked up by `claude-packs update`.
