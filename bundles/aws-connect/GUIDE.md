@@ -106,6 +106,11 @@ acme-support/
 resolves real ARNs by name lookup and substitutes them per environment. This is the
 single most common way hand-built Connect deployments break.
 
+Generated flows are also checked against the **API-verified import-safety rules**
+(`references/contact-flows.md` §14): real block `Type` strings only, the exact
+required-error set per block, verified parameter shapes — the things
+`CreateContactFlow` rejects with `InvalidContactFlowException` if a generator guesses.
+
 Verify before deploying:
 
 ```bash
@@ -125,10 +130,12 @@ shellcheck deploy.sh
 ```
 
 Deploy packages Lambdas → uploads the CFN template to S3 and creates/updates the stack →
-resolves ARNs by name → substitutes placeholders into flow JSON → pushes & publishes flow
-content → associates the flow to the number → reconciles CLI-only resources (Q assistant,
-KB, gateway) → smoke-checks → prints a manual-steps checklist. Every step is
-create-or-select, so re-running is safe.
+updates Lambda code (function names resolved from the stack's own outputs/resources, not
+guessed from a naming convention) → enables instance attributes (flow logs, Contact Lens)
+and storage configs → resolves ARNs by name → substitutes placeholders into flow JSON →
+pushes & publishes flow content → associates the flow to the number → reconciles CLI-only
+resources (Q assistant, KB, gateway) → smoke-checks → prints a manual-steps checklist.
+Every step is create-or-select, so re-running is safe.
 
 > **CFN template over 51,200 bytes?** CloudFormation refuses an *inline* template larger
 > than that. Connect stacks hit it fast because flow JSON is embedded inline in

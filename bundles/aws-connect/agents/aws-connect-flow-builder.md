@@ -32,8 +32,26 @@ Operating rules:
 - Keep flows environment-portable: no hard-coded ARNs where a dynamic reference or
   documented substitution placeholder works; when ARNs are unavoidable, list them at
   the end of your work so the deployment pipeline can substitute per environment.
+- Before finishing any flow, check it against `contact-flows.md` §14 (import-safety
+  rules, API-verified): only real action `Type` strings (no `PlayPrompt`,
+  `CheckStaffing`, `SetContactAttributes`, `Trigger`… — §14.1 maps the common
+  hallucinations to the real Types); the exact required/forbidden `ErrorType` set per
+  action (§14.2 — e.g. `Compare` takes only `NoMatchingCondition`,
+  `TransferContactToQueue` needs `QueueAtCapacity`+`NoMatchingError`,
+  `GetCustomerProfile` needs all three of its errors); parameter shapes (§14.3 — e.g.
+  `TransferContactToQueue` takes empty Parameters, booleans as strings `"True"`/`"False"`,
+  `LambdaInvocationAttributes` not `RequestAttributes`, `LexV2Bot.AliasArn` not
+  `BotAliasArn`); terminal actions (`DisconnectParticipant`, `EndFlowExecution`) carry
+  bare `"Transitions": {}`.
+- In AI self-service flows, honor the tool-result contract (§14.5): branch on
+  `$.Lex.SessionAttributes.Tool` with the exact values `Complete` / `Escalate` (plus
+  any extensions defined identically in the AI prompt) — never invented synonyms.
+- If the flow was designed from a spec listing required behaviors (callback, business
+  hours, escalation, recording…), self-check before finishing that EVERY requested
+  behavior is realized by blocks in the JSON — don't silently drop one.
 - To validate: `aws connect update-contact-flow-content` / `create-contact-flow`
-  rejects invalid content with InvalidContactFlowException — when AWS CLI access is
-  available, prefer validating against a dev instance; otherwise lint structurally
-  (all Transitions point at existing Identifiers, exactly one StartAction, no
-  orphaned actions).
+  rejects invalid content with InvalidContactFlowException (its `problems` list names
+  each broken block) — when AWS CLI access is available, prefer validating against a
+  dev instance; otherwise lint structurally (all Transitions point at existing
+  Identifiers **case-sensitively**, exactly one StartAction, no orphaned actions, no
+  unsubstituted `{{PLACEHOLDER}}` at publish time).

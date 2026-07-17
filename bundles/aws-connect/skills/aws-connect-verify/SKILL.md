@@ -83,6 +83,8 @@ there is by design, not a bug.
 | Never reaches an agent | Routing profile lacks the queue; no agent Available; or **Check staffing** / hours branch taken. |
 | Block missing or odd in chat/task | Many blocks are **voice-only** — check the channel-support matrix. |
 | Works in dev, fails in prod | A hard-coded ARN survived substitution, or the prod flow wasn't republished after content update. |
+| AI bot finishes but call never disconnects / never escalates | The flow's `Compare` on `$.Lex.SessionAttributes.Tool` doesn't match the AI prompt's Return-to-Control values **verbatim** (`Complete`/`Escalate`, case-sensitive) — see `contact-flows.md` §14.5. |
+| Q in Connect Lambda gets AccessDenied | IAM policy uses the `qconnect:` action prefix, which doesn't exist — Q in Connect IAM actions use `wisdom:` (e.g. `wisdom:UpdateSessionData`). |
 | Attributes vanish across a transfer | `$.FlowAttributes.*` is **scoped to the current flow** — not in the CTR, CCP, or passed to modules/transferred flows. |
 | No flow logs at all | Instance toggle on but **Set logging behavior** block missing, or the flow isn't published. |
 | Athena/Glue chokes on attributes | Attribute names must be camelCase, alphanumeric + periods — no spaces/special chars. |

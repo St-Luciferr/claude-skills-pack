@@ -50,10 +50,14 @@ summary with the user before generating.
 ## Phase 2 — Design
 
 Delegate to the `aws-connect-architect` agent with REQUIREMENTS.md. Output
-`docs/DESIGN.md`: flow inventory (which flow types), queue/routing-profile/hours
-model, Lambda inventory (purpose, trigger, data contract), AI agents + their MCP
-tools, data/analytics pipeline, and everything that CANNOT be automated (see
-"Manual steps" below). Get user sign-off on the design if anything is ambiguous.
+`docs/DESIGN.md`: flow inventory (which flow types) **with a per-flow behavior
+checklist** — for each flow, the ordered behaviors it must realize (business-hours
+check, callback offer, recording, AI self-service, escalation path…), so flow
+generation can be checked behavior-by-behavior instead of vibes — plus
+queue/routing-profile/hours model, Lambda inventory (purpose, trigger, data
+contract), AI agents + their MCP tools, data/analytics pipeline, and everything that
+CANNOT be automated (see "Manual steps" below). Get user sign-off on the design if
+anything is ambiguous.
 
 ## Phase 3 — Generate the package
 
@@ -88,8 +92,14 @@ Generation rules (non-negotiable):
   (Version 2019-10-30), every fallible action has an Errors transition, channel
   support checked per block. NO hard-coded ARNs — use `${QueueArn_Support}`-style
   placeholders and record every placeholder in a manifest comment block in
-  deploy.sh. Structurally lint each flow (unique Identifiers, one StartAction,
-  transitions resolve, no orphans) before finishing.
+  deploy.sh. Lint each flow before finishing: structurally (unique Identifiers, one
+  StartAction, transitions resolve case-sensitively, no orphans) AND against the
+  **import-safety rules in `contact-flows.md` §14** — real action `Type` strings only,
+  the exact required/forbidden ErrorType set per action, verified parameter shapes,
+  bare `"Transitions": {}` on terminal actions. Then self-check that every behavior
+  DESIGN.md asked of this flow (hours check, callback, escalation, recording…) is
+  actually realized by a block — generated flows silently dropping a requested
+  behavior is the most common quality failure.
 - **CloudFormation** (`aws-connect-backend-dev` agent, `iac-devops.md` reference):
   parameterize the instance ARN (existing instance) or create
   `AWS::Connect::Instance` (new); queues, hours, routing profiles, contact flows
@@ -133,12 +143,40 @@ Generation rules (non-negotiable):
   request/response schemas with `description` on every field (the AI agent reads
   these), auth scheme matching the gateway (AgentCore Gateway / API key / SigV4).
   Keep tool descriptions action-oriented ("Look up order status by order ID").
+- **Cross-asset consistency (verify before handoff — drift here fails only at runtime).**
+  The generated artifacts form one contract; check them against each other, not just
+  individually:
+  - **Field fidelity end-to-end**: every field name (camelCase), type, nested shape
+    (array→`items`, object→`properties`) and enum value list must appear **verbatim** in
+    the OpenAPI schema, the Lambda's request parsing / response keys, and the AI prompt's
+    tool instructions. Never flatten nested fields; never emit `type: array` without
+    `items`.
+  - **HTTP method & path parity**: the OpenAPI verb+path, the API Gateway
+    Method/Resource in the template, and the URL the Lambda/tooling expects must be
+    identical — and the template's API-endpoint Output must be the **stage root with no
+    path suffix** (the OpenAPI paths carry the prefix; a suffixed Output doubles to
+    `/tools/tools/...` → 403 after substitution).
+  - **Names resolve**: every env var the Lambda reads (`os.environ[...]`) exists in that
+    function's CFN `Environment`; every DynamoDB `IndexName` the Lambda queries is a GSI
+    declared in the template; every `!Ref`/`!Sub ${...}` resolves to a Parameter,
+    Resource, or pseudo-parameter.
+  - **IAM for Q in Connect uses the `wisdom:` action prefix** — `qconnect:*` does not
+    exist as an IAM prefix and fails with AccessDenied at runtime (the CLI service name
+    `aws qconnect` is unrelated to the IAM namespace). A Lambda calling
+    `UpdateSessionData` needs `wisdom:UpdateSessionData`.
+  - Cheap mechanical sweep at the end: grep each spec'd field name across flow JSON,
+    Lambda, OpenAPI, and prompt; report (don't silently fix) mismatches.
 - **AI prompts** (`ai-prompts/`): system prompt per AI agent — role, scope, the
   tools available and when to use each, escalation-to-human rules (Return to
   Control), guardrails (never reveal PII, stay on domain), and the `<message>`
   formatting requirement where applicable. Store as YAML with fields:
   name, type (ANSWER_RECOMMENDATION / SELF_SERVICE / orchestrator), model config,
-  prompt text, tool list.
+  prompt text, tool list. Hard rules: each `{{$.xxx}}` system variable may appear
+  **only once** in the prompt (Q in Connect rejects duplicates); voice prompts must be
+  TTS-friendly (no markdown/special characters, spell out how to read numbers and
+  dates); the Return-to-Control vocabulary the prompt teaches (`Complete`, `Escalate`,
+  any extensions) must match the flow's `Compare` operands **verbatim** — this
+  prompt↔flow contract is the top integration bug in AI self-service.
 - **tags.json** (always generated): a top-level JSON array of `{"Key":..,"Value":..}`
   objects — the CloudFormation `--tags` / `create-stack --tags` shape — carrying
   cost-allocation and ownership tags (at minimum `Name`, `Project`, `Creator`,
@@ -165,21 +203,32 @@ Generation rules (non-negotiable):
   - **deploy order**: seed any SSM params CFN reads at deploy time (see SSM bullet) →
     upload template to S3 + create/update the stack (see CFN bullet) → update Lambda code
     **with retry** (`ResourceConflictException` is normal mid-update; retry ×3 then
-    `aws lambda wait function-updated`) → resolve real ARNs/IDs by **NAME** lookup
-    (`aws connect list-*`, `list-instances`, `qconnect list-*`) → substitute placeholders
-    into flow JSON (envsubst/jq) → `aws connect update-contact-flow-content` per flow →
-    **publish** the flows (logs and runtime only see published content) → **associate the
-    inbound flow to the claimed number** (`associate-phone-number-contact-flow` — CFN has
-    no resource for this, so without it the number rings into nothing) → create/reconcile
-    the CLI-only resources (AI prompts & agents, Q assistant, knowledge base, AgentCore
-    gateway/target, integration associations) → inject real IDs into the tool Lambdas' env
+    `aws lambda wait function-updated`) — resolve each function's real name from the
+    **stack itself** (`describe-stacks` Outputs or `list-stack-resources`
+    PhysicalResourceId), never from a naming-convention guess; conventions drift and the
+    update silently targets nothing → enable required **instance attributes**
+    (`aws connect update-instance-attribute`: at minimum `CONTACTFLOW_LOGS`, plus
+    `CONTACT_LENS` etc. per design — without CONTACTFLOW_LOGS, `/aws-connect-verify` has
+    no logs to trace) and associate instance **storage configs** (CALL_RECORDINGS,
+    CHAT_TRANSCRIPTS → S3) when recording is in scope → resolve real ARNs/IDs by **NAME**
+    lookup (`aws connect list-*`, `list-instances`, `qconnect list-*`) → substitute
+    placeholders into flow JSON (envsubst/jq) → `aws connect update-contact-flow-content`
+    per flow → **publish** the flows (logs and runtime only see published content) →
+    **associate the inbound flow to the claimed number**
+    (`associate-phone-number-contact-flow` — CFN has no resource for this, so without it
+    the number rings into nothing) → create/reconcile the CLI-only resources (AI prompts
+    & agents, Q assistant, knowledge base, AgentCore gateway/target, integration
+    associations) → inject real IDs into the tool Lambdas' env
     and `put-parameter --overwrite` the SSM placeholders → `scripts/provision-agents.sh` →
     smoke checks (describe each resource, validate flow content accepted). Print the
     manual-steps checklist.
   - **Every create step is create-or-select, keyed by NAME**: list existing → reuse and
     capture its id/arn if found → else create and wait for `ACTIVE`/`READY`. This is what
     makes re-runs safe and is the CLI-side analogue of the flow-ARN-by-name rule; never
-    assume a resource is absent.
+    assume a resource is absent. **Reconcile config drift on reuse too**: when a reused
+    resource points at stale config (e.g. an AgentCore gateway target whose OpenAPI S3
+    URI references a bucket from a previous stack), `update-*` it in place instead of
+    skipping — reuse-without-reconcile leaves the resource wired to a dead dependency.
   - **cleanup** mirrors deploy in **reverse dependency order**: gateway target → gateway →
     credential provider → gateway IAM role → assistant associations → assistant →
     knowledge base → integration associations → empty S3 buckets → `delete-stack`

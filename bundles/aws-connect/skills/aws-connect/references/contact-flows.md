@@ -103,7 +103,7 @@ Top level (`Content` string of Create/UpdateContactFlow, and what export produce
 | `CreateCallbackContact` | (part of Transfer to queue "callback" config) | Interactions-category action creating a callback contact. |
 | `CreateCase` / `GetCase` / `UpdateCase` | **Cases** | Amazon Connect Cases. |
 | `CreateWisdomSession` | **Amazon Q in Connect / Connect assistant** | AI assistant session (`$.Wisdom.SessionArn`). |
-| `TagContact` / `UnTagContact` | **Contact tags** | User-defined contact tags. |
+| `TagContact` / `UntagContact` | **Contact tags** | User-defined contact tags. |
 | `StartOutboundChatContact`, `CompleteOutboundCall`, `ResumeContact`, `UpdateContactMediaProcessing`, `UpdateContactMediaStreamingBehavior` (**Start/Stop media streaming**), `UpdatePreviousContactParticipantState` (**Interrupt agent**), `UpdateContactData`, `EndFlowModuleExecution` (**Return** from module), `InvokeFlowModule` (**Invoke module**) | — | See per-action pages. |
 
 ### Flow control actions (all flow types)
@@ -427,6 +427,10 @@ Gotchas: `$.StoredCustomerInput` and Lambda `$.External.*` are volatile (latest 
 
 ## 13. Common pitfalls
 
+> Authoring flow JSON by hand or by generation? §14 lists the exact `Type` strings,
+> required error sets, and parameter shapes the `CreateContactFlow` validator enforces —
+> check against it before deploying.
+
 - **Unpublished flows**: `SAVED` drafts aren't validated and can't be attached/executed; phone numbers, quick connects, `TransferToFlow`, and `Set event flow` targets need **published** flows. Publishing validates and can throw `InvalidContactFlowException` with a `problems` list via API.
 - **Wrong flow type**: block palette and allowed actions differ per type; you cannot convert or cross-import types. E.g. `TransferContactToQueue`/`UpdateContactTargetQueue` are invalid in whisper/hold/queue flows; `MessageParticipant` invalid in hold flows; `GetParticipantInput` invalid in whisper/hold flows.
 - **Channel mismatches**: `GetParticipantInput` (DTMF) is voice-only — chat/task must gather input via Lex (`ConnectParticipantWithLexBot`) or Views; `SSML`/`PromptId` voice-only (chat gets raw text if you send SSML); customer/agent hold flows voice-only; **Call phone number**, Voice ID, media streaming voice-only; **Show view** chat/task-oriented. Always branch on `$.Channel` in multi-channel flows; a block hitting an unsupported channel takes its **Error** branch.
@@ -438,6 +442,152 @@ Gotchas: `$.StoredCustomerInput` and Lambda `$.External.*` are volatile (latest 
 - **Transfer-to-agent flow plays to the caller** on cold transfer — never include internal/sensitive info.
 - **250-action limit** per flow (200 blocks for import/export); Lambda sync timeout ≤ 8 s per invocation (chain invocations for longer work).
 - `Metadata` is cosmetic; hand-written flows without it work but render stacked at (0,0) in the designer.
+
+## 14. Import-safety: API-verified block rules
+
+> Verified against the live `CreateContactFlow` API (source: aws-samples *AICC Builder*
+> knowledge base, verified 2026-06). Guessed action `Type` strings fail with
+> `InvalidContactFlowException: Invalid Action type`; wrong parameter/error shapes fail
+> with per-path `problems` messages. Generators MUST check flows against this section
+> before deploying.
+
+### 14.1 Hallucinated `Type` names that fail import → correct Type
+
+These are the names LLMs and diagram transcriptions most often invent. None of them import.
+
+| Invalid (fails import) | Use instead |
+|---|---|
+| `PlayPrompt` | `MessageParticipant` |
+| `SetContactAttributes` | `UpdateContactAttributes` |
+| `SetLoggingBehavior` | `UpdateFlowLoggingBehavior` |
+| `SetWorkingQueue` | `UpdateContactTargetQueue` |
+| `GetUserInput`, `StoreUserInput`, `StoreCustomerInput` | `GetParticipantInput` (store mode = `StoreInput: "True"`) |
+| `CheckCondition`, `CheckValue`, `CheckAttribute` | `Compare` |
+| `CheckStaffing`, `CheckQueueStatus`, `GetQueueMetrics` | `CheckMetricData` (e.g. `MetricType: NumberOfAgentsAvailable`) |
+| `TransferToQueue`, `TransferToAgent` | `TransferContactToQueue` (after `UpdateContactTargetQueue`) |
+| `TransferToPhoneNumber`, `TransferToThirdParty` | `TransferParticipantToThirdParty` |
+| `Distribute` | `DistributeByPercentage` |
+| `StartMediaStreaming`, `StopMediaStreaming` | `UpdateContactMediaStreamingBehavior` |
+| `InvokeAPI` | `InvokeLambdaFunction` |
+| `InvokeAgentAction`, `InvokeBedrockAgent`, `InvokeAmazonQConnect`, `GetParticipantWithLexV2Bot` | `ConnectParticipantWithLexBot` |
+| `PutCustomerProfile`, `UpdateCustomerProfileObject` | Customer Profiles actions (`UpdateCustomerProfile` etc.) |
+| `UpdateContactRoutingData` | `UpdateContactRoutingCriteria` |
+| `Trigger`, `EntryPoint` | nothing — flows start at `StartAction`'s target; delete the block |
+| `NumberEquals` (Compare operator) | `Equals` (there is no `NumberEquals`; note `NumberGreaterThan` but `NumberGreaterOrEqualTo` — the `Than` drops on the `OrEqualTo` forms) |
+
+### 14.2 Required/forbidden `Errors` per action (enforced at import)
+
+Publishing/importing validates the exact error set — a missing required ErrorType fails
+with `Action is missing required error`, an extra one with `Invalid Action error`.
+
+| Action | Required ErrorTypes | Notes |
+|---|---|---|
+| `Compare`, `DistributeByPercentage` | `NoMatchingCondition` | `NoMatchingError` is **rejected** on `Compare` |
+| `InvokeLambdaFunction`, `UpdateContactAttributes`, `UpdateContactTargetQueue`, `CreateWisdomSession`, `Wait`, `CheckHoursOfOperation` | `NoMatchingError` | `CheckHoursOfOperation` **rejects** `NoMatchingCondition` and additionally requires **both** `True` and `False` Conditions |
+| `TransferContactToQueue`, `DequeueContactAndTransferToQueue` | `QueueAtCapacity` + `NoMatchingError` | anything else (e.g. `QueueDoesNotExist`) is rejected |
+| `GetParticipantInput` (menu mode) | `InputTimeLimitExceeded` + `NoMatchingCondition` + `NoMatchingError` | store mode: **only** `NoMatchingError` is valid |
+| `UpdateContactCallbackNumber` | `InvalidCallbackNumber` + `CallbackNumberNotDialable` | `NoMatchingError` is **rejected** |
+| `ConnectParticipantWithLexBot` | `NoMatchingError` + `NoMatchingCondition` | `AgentError` is **rejected** |
+| `GetCustomerProfile` | `MultipleFoundError` + `NoneFoundError` + `NoMatchingError` | each individually mandatory |
+| `GetCustomerProfileObject` | `NoneFoundError` + `NoMatchingError` | |
+| `AuthenticateParticipant` | `TimeLimitExceeded` + `NoMatchingError` | |
+| `UpdateFlowLoggingBehavior`, `UpdateContactRecordingBehavior` | none — success-only | attaching `NoMatchingError` is rejected |
+| `MessageParticipant` | none required | imports with no Errors; still wire one deliberately |
+
+**Terminal actions** — `DisconnectParticipant` and `EndFlowExecution` are the only
+terminal types in a standard contact flow (`EndFlowModuleExecution` is module-only:
+`Action … is not supported in contact flow type contactFlow`). Terminal actions must
+carry `"Parameters": {}` and `"Transitions": {}` with **no** `Errors`/`Conditions`
+keys at all (`Action does not support transitions`). `Transfer*` actions are NOT
+terminal — they need `NextAction` + their error set.
+
+### 14.3 Parameter shapes that differ from what people write
+
+- **`GetParticipantInput` has two modes**, both requiring `InputTimeLimitSeconds`
+  (string) at the Parameters root:
+  - *Menu* (branch on digit): `StoreInput: "False"`, Conditions on single chars, **no**
+    `DTMFConfiguration`, no `InputValidation`.
+  - *Store* (collect a number): `StoreInput: "True"`, requires
+    `InputValidation.CustomValidation.MaximumLength`; `DTMFConfiguration` may carry only
+    `InputTerminationSequence` / `DisableCancelKey`. Result at `$.StoredCustomerInput`.
+  - `DisableCancelKey` (and `SkipWhenDTMFBufferEnabled` on `MessageParticipant`) must be
+    **string** `"True"`/`"False"` — a JSON boolean fails with a *misleading*
+    `Invalid Action type` error.
+- **`TransferContactToQueue` takes `"Parameters": {}`** — any `QueueId`/`Queue` property
+  is rejected; the queue comes from a preceding `UpdateContactTargetQueue`. That block
+  needs `QueueId` (or `AgentId` for a personal queue) as a **plain string ARN/UUID** —
+  never a queue *name*, never a nested object (`Failed to convert id: Customer Service`).
+- **`InvokeLambdaFunction`**: attributes go in `LambdaInvocationAttributes` (NOT
+  `RequestAttributes`); `ResponseValidation.ResponseType` must be `STRING_MAP` or `JSON`
+  (`JSON_OBJECT` etc. rejected); `InvocationTimeLimitSeconds` 1–8.
+- **`ConnectParticipantWithLexBot`**: use `LexV2Bot: {"AliasArn": …}` (bare
+  `BotAliasArn`, `LexBot:{AliasArn}` V1 shape, `ParticipantRole`, `RequestAttributes`,
+  `IdleSessionTimeout` all rejected); session context via `LexSessionAttributes` (NOT
+  `SessionAttributes`); exactly **one** of `Text`/`SSML`/`PromptId`/`Media`/
+  `LexInitializationData` must be set.
+- **`MessageParticipant` / `GetParticipantInput`**: exactly one of
+  `Text`/`SSML`/`PromptId`/`Media` (`Only one of these properties may be defined`).
+  A `PromptId` must resolve on the **target** instance — placeholders and cross-region
+  ARNs fail with `Failed to convert id: <arn>`.
+- **`UpdateContactRecordingBehavior`**: flat `Agent`/`Customer` params are invalid — use
+  `RecordingBehavior: {RecordedParticipants: ["Agent","Customer"], IVRRecordingBehavior:
+  "Enabled"}` + `AnalyticsBehavior: {Enabled, AnalyticsLanguage, ChannelConfiguration:
+  {Voice: {AnalyticsModes: […]}, Chat: {…}}}`. Voice `AnalyticsModes` takes exactly ONE of
+  `RealTime`/`PostContact` — and `RealTime` fails import unless real-time Contact Lens
+  prerequisites are met on the instance (use `PostContact` unless you know you need it).
+- **`UpdateContactTextToSpeechVoice`**: params are `TextToSpeechVoice` +
+  `TextToSpeechEngine` (NOT `VoiceId`/`Engine`/`LanguageCode`).
+- **`UpdateFlowLoggingBehavior`**: param is `FlowLoggingBehavior` (NOT
+  `LoggingBehavior`), value `"Enabled"` (NOT `"Enable"`).
+- **`GetCustomerProfile` / `AssociateContactToCustomerProfile`**: identifier fields must
+  be wrapped in `ProfileRequestData` (e.g. `{ProfileRequestData: {IdentifierName:
+  "_phone", IdentifierValue: "$.CustomerEndpoint.Address"}}`).
+- **`UpdateContactCallbackNumber`**: `CallbackNumber` must be a JSONPath
+  (`$.CustomerEndpoint.Address`, `$.StoredCustomerInput`) — a literal `+1555…` is
+  rejected. Follow with `TransferContactToQueue` (queue already set). For scheduled
+  retries, `CreateCallbackContact` requires `InitialCallDelaySeconds` +
+  `MaximumConnectionAttempts` + `RetryDelaySeconds`.
+- **`Loop`**: condition operands are `ContinueLooping` / `DoneLooping` (NOT
+  `Looping`/`Complete`), and a top-level `Transitions.NextAction` is required in
+  addition to the two Conditions. `Wait` uses `TimeLimitSeconds` + a `WaitCompleted`
+  condition (NOT `WaitTime`).
+- **`CheckMetricData`** `MetricType` is case-sensitive, exactly one of:
+  `NumberOfAgentsAvailable`, `NumberOfContactsInQueue`,
+  `OldestContactInQueueAgeSeconds`, `NumberOfAgentsStaffed`, `NumberOfAgentsOnline`.
+  Requires `NoMatchingCondition` + `NoMatchingError`, and a working queue set first.
+- **`Compare` `ComparisonValue`** must use a real JSONPath root (`$.Attributes.`,
+  `$.Channel`, `$.CustomerEndpoint.`, `$.SystemEndpoint.`, `$.External.`, `$.Lex.`,
+  `$.Customer.`, `$.StoredCustomerInput`, `$.Queue.`, `$.Media.`, `$.FlowAttributes.`,
+  `$.ContactId` …). `$.Agent.*` does not exist in inbound flows. Condition `Operands`
+  are always arrays of strings.
+- **`CheckHoursOfOperation`** `HoursOfOperationId` must be an ARN (a name fails with
+  `Not a supported id format`); omit it entirely to use the working queue's hours.
+
+### 14.4 Structural rules
+
+- `StartAction` and every `NextAction` (including inside `Errors`/`Conditions`) must
+  match an existing `Identifier` **exactly, case-sensitively**.
+- Console **import** additionally requires a `Metadata.ActionMetadata[<id>]` entry per
+  Identifier (`ActionMetadata missing for action <id>`) plus `entryPointPosition`,
+  `name`, `type: "contactFlow"`, `status`, `hash` — the API (`CreateContactFlow`) is
+  laxer about Metadata but flows without positions render stacked at (0,0).
+- Placeholders like `{{QUEUE_ARN}}` must be substituted **before**
+  create/update — the validator resolves IDs at publish (`Failed to convert id:
+  {{QUEUE_ARN}}`). Deploy pipelines therefore substitute → `update-contact-flow-content`
+  → publish, in that order.
+
+### 14.5 AI-bot ↔ flow tool-result contract (Q in Connect self-service)
+
+When a Connect AI agent (Lex conversational-AI bot) returns control to the flow, the
+tool outcome lands in **`$.Lex.SessionAttributes.Tool`** with the fixed vocabulary
+**`Complete`** (wrap up → goodbye → `DisconnectParticipant`) and **`Escalate`** (copy
+context attrs → `UpdateContactTargetQueue` → `TransferContactToQueue`). The `Compare`
+operands in the flow must match what the AI prompt teaches the bot **verbatim and
+case-sensitively** — never invent alternates (`END_CALL`, `DONE`, `ESCALATE`,
+`TRANSFER`, `actionType`). Extensions (`EscalateBilling`, `OutOfHoursComplete`) are fine
+only if defined identically on BOTH the prompt side and the flow side. Copy any inputs
+(`$.Lex.SessionAttributes.escalationReason` etc.) to contact attributes before
+transferring — Lex attributes don't persist.
 
 ## Sources
 
@@ -469,3 +619,4 @@ Gotchas: `$.StoredCustomerInput` and Lambda `$.External.*` are volatile (latest 
 - https://docs.aws.amazon.com/connect/latest/APIReference/API_CreateContactFlow.html
 - https://docs.aws.amazon.com/connect/latest/APIReference/API_CreateContactFlowVersion.html
 - https://docs.aws.amazon.com/connect/latest/APIReference/API_SearchContactFlows.html
+- https://github.com/aws-samples/sample-aicc-builder-for-amazon-connect-ai-agent (knowledge-base-docs/contact-flow — API-verified block reference, §14)
