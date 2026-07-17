@@ -59,6 +59,9 @@ dropped, and printing each version transition (`↑ aws-connect v1.1.0 → v1.2.
 
 - `claude-packs self-update` still exists to refresh only the CLI/registry without
   touching any install (and is the fallback for updating the CLI itself).
+- **Upgrading from a CLI older than v1.2.0**: run `claude-packs self-update` once
+  first — older CLIs don't refresh the registry on `update` and would silently
+  re-install stale content.
 - Installs made with `install.sh --local` have no git registry — `update` says so and
   re-copies from the local content instead.
 - `list` flags installs that are behind (`✓ installed (1.1.0 → 1.2.0 available)`).
