@@ -61,6 +61,15 @@ anything is ambiguous.
 
 ## Phase 3 — Generate the package
 
+**Persist state, generate in phases.** Long builds outlive a context window. Keep
+`docs/BUILD-STATE.md` current as you go — which phase/artifact is done, what was
+decided, what's next — and **re-read it (plus REQUIREMENTS/DESIGN) before resuming
+work in a fresh or compacted session; trust the files over conversation memory.**
+Generate in reviewable chunks (infra → Lambdas → flows → AI assets → scripts),
+pausing for a quick user check between major chunks rather than emitting the whole
+package in one shot; when a phase is done, say so and stop — don't announce a phase
+and generate it in the same breath as three others.
+
 Produce this layout (adapt names to the project):
 
 ```
@@ -77,6 +86,8 @@ Produce this layout (adapt names to the project):
 │   └── <tool-group>.yaml         # OpenAPI 3.x schemas for MCP tool integrations
 ├── ai-prompts/
 │   └── <name>.yaml               # Q in Connect AI prompt / AI agent definitions
+├── kb/                           # only when a Q in Connect knowledge base is in scope
+│   └── <category>/<topic>.md     # KB content docs, one topic per file
 ├── config/
 │   ├── dev.env, prod.env         # per-env: instance ARN/ID, region, KMS, prefixes
 │   └── agents.yaml               # agent roster — operational data, not IaC
@@ -177,6 +188,13 @@ Generation rules (non-negotiable):
   dates); the Return-to-Control vocabulary the prompt teaches (`Complete`, `Escalate`,
   any extensions) must match the flow's `Compare` operands **verbatim** — this
   prompt↔flow contract is the top integration bug in AI self-service.
+- **KB content** (`kb/`, only when a Q in Connect knowledge base is in scope): seed
+  documents the assistant retrieves from — one self-contained doc per topic
+  (question + answer + variants a customer would actually ask), roughly 200–1,000
+  tokens each, organized by category directory. Source them from the user's real
+  FAQ/policy material during the interview; never invent policy facts — stub with
+  `TODO(owner)` markers instead. deploy.sh syncs `kb/` to the KB's S3 source (or
+  prints the console step if the KB integration is console-only).
 - **tags.json** (always generated): a top-level JSON array of `{"Key":..,"Value":..}`
   objects — the CloudFormation `--tags` / `create-stack --tags` shape — carrying
   cost-allocation and ownership tags (at minimum `Name`, `Project`, `Creator`,
@@ -283,6 +301,29 @@ Generation rules (non-negotiable):
   `cfn-lint`/`aws cloudformation validate-template`, `shellcheck deploy.sh`,
   Lambda unit tests.
 
+## Phase 3.5 — Review gate (mandatory before handoff)
+
+Do not hand off on "generation finished" — gate on three checks and record the result
+in `docs/BUILD-STATE.md`:
+
+1. **Artifact presence**: every file the design promised exists and is non-empty;
+   every flow in DESIGN.md's inventory has a `.flow.json`; every Lambda in the
+   inventory has code + tests.
+2. **Mechanical validation**: the cheap-verification suite above, plus each flow
+   checked against `contact-flows.md` §14 and the cross-asset consistency sweep.
+3. **Adversarial read-through**: review the package as a skeptic (a fresh
+   `aws-connect-backend-dev`/`aws-connect-flow-builder` agent works well) — does each
+   flow realize every behavior DESIGN.md assigned it, do the contracts line up, would
+   deploy.sh actually run top to bottom? Verdict: **READY_TO_DEPLOY** or
+   **NEEDS_EDITS** with a finding list.
+
+Fix findings with **minimal edits to the failing artifact — never regenerate a whole
+file to fix one finding** (regeneration reintroduces drift elsewhere). Re-run only the
+failed check. Report only findings that change runtime behavior; don't churn on style,
+and don't flag things that are correct by design (unsubstituted `${Placeholders}` in
+flow JSON are *expected* pre-deploy; a permissive dev-stage API key is a documented
+manual step, not a bug — unless prod is in scope).
+
 ## Manual steps (always surface these in README + deploy.sh output)
 
 Phone number claiming/porting, SAML IdP setup, approved origins for embedded CCP,
@@ -300,3 +341,21 @@ Point the user at **`/aws-connect-verify`** to confirm the deployment actually w
 (flow published & associated to the number, Lambda associations, agents on the right
 routing profile) and to trace a test contact through the flow logs. A deploy that
 succeeds is not the same as a contact center that answers.
+
+## Iterating on a generated package (change requests after Phase 3)
+
+Never regenerate; patch. Classify each request first:
+
+- **Asset-level** (wording of a prompt, a queue's hours, one flow branch): minimal
+  `Edit` to the one artifact, show the diff, re-run only the checks that artifact
+  participates in.
+- **Spec-level** (new field, new operation, changed data source, new channel): update
+  REQUIREMENTS/DESIGN first, then enumerate the blast radius — a new field touches
+  the flow's Lambda block, the Lambda contract, the OpenAPI schema, and the AI
+  prompt's tool instructions — confirm the list with the user, then patch each
+  affected artifact.
+- **Ambiguous** (greeting, tone, escalation phrasing — lives in the AI prompt *or*
+  the flow, sometimes both): ask which surface they mean before touching anything.
+
+If the same fix fails twice, stop and re-examine the diagnosis with the user instead
+of trying a third variation.

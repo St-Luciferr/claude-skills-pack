@@ -52,13 +52,16 @@ Skills and agents load at session start — **restart Claude Code** after instal
 
 ### Keeping up to date
 
-Two levels, deliberately separate:
+One command: **`claude-packs update`**. On a normal (git-backed) install it refreshes the
+registry first (`git pull`), then re-copies the latest bundle content into the target's
+`.claude` — upgrading what's installed, pruning skills/agents a newer bundle version
+dropped, and printing each version transition (`↑ aws-connect v1.1.0 → v1.2.0`).
 
-- `claude-packs self-update` — `git pull`s the registry in `~/.claude-packs`, so you get
-  new bundles and new versions of existing ones.
-- `claude-packs update` — copies that newer content into a target's `.claude`, upgrading
-  what you've already installed there. `list` flags installs that are behind
-  (`✓ installed (1.0.0 → 1.1.0 available)`).
+- `claude-packs self-update` still exists to refresh only the CLI/registry without
+  touching any install (and is the fallback for updating the CLI itself).
+- Installs made with `install.sh --local` have no git registry — `update` says so and
+  re-copies from the local content instead.
+- `list` flags installs that are behind (`✓ installed (1.1.0 → 1.2.0 available)`).
 
 ### Uninstalling
 

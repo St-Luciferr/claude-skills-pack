@@ -290,6 +290,28 @@ EOF
 $(manifest_array "$m" agents)
 EOF
 
+  # prune items an earlier version of this bundle installed that the current
+  # manifest no longer ships — otherwise updates strand orphaned skills/agents
+  local old
+  while IFS= read -r old; do
+    [ -n "$old" ] || continue
+    if ! manifest_array "$m" skills | grep -qx "$old"; then
+      rm -rf "${target}/skills/${old}"
+      printf '  %s-%s skill %s %s(no longer in bundle)%s\n' "$RED" "$RESET" "$old" "$DIM" "$RESET"
+    fi
+  done <<EOF
+$(receipt_items "$target" "$name" skill)
+EOF
+  while IFS= read -r old; do
+    [ -n "$old" ] || continue
+    if ! manifest_array "$m" agents | grep -qx "$old"; then
+      rm -f "${target}/agents/${old}.md"
+      printf '  %s-%s agent %s %s(no longer in bundle)%s\n' "$RED" "$RESET" "$old" "$DIM" "$RESET"
+    fi
+  done <<EOF
+$(receipt_items "$target" "$name" agent)
+EOF
+
   receipt_drop "$target" "$name"
   while IFS= read -r s; do
     [ -n "$s" ] || continue
@@ -366,12 +388,27 @@ cmd_update() {
     say "Nothing installed at $(pretty_target "$target")."
     return 0
   fi
+  # Refresh the registry first so "update" means "latest", not "whatever was cloned
+  # last time". Only for managed installs — never git-pull a contributor's dev clone.
+  # Non-git managed installs (install.sh --local) get a note instead.
+  if [ "$IS_MANAGED" -eq 1 ] && [ -d "${PKG_ROOT}/.git" ] && command -v git >/dev/null 2>&1; then
+    printf '%sRefreshing registry (git pull) ...%s\n' "$DIM" "$RESET"
+    git -C "$PKG_ROOT" pull --ff-only >/dev/null 2>&1 \
+      || warn "could not refresh the registry (git pull failed) — updating from local content"
+  elif [ "$IS_MANAGED" -eq 1 ]; then
+    warn "registry is not a git checkout (installed with --local) — updating from local content only"
+  fi
   printf '%sRe-installing latest bundle content over existing installs...%s\n' "$DIM" "$RESET"
   OPT_FORCE=1
-  local name
+  local name prev cur
   while IFS= read -r name; do
     [ -n "$name" ] || continue
+    prev="$(receipt_version "$target" "$name")"
     install_one "$name" "$target"
+    cur="$(receipt_version "$target" "$name")"
+    if [ -n "$prev" ] && [ -n "$cur" ] && [ "$prev" != "$cur" ]; then
+      printf '  %s↑ %s v%s → v%s%s\n' "$GREEN" "$name" "$prev" "$cur" "$RESET"
+    fi
   done <<EOF
 $names
 EOF

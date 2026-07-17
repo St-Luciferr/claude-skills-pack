@@ -34,7 +34,8 @@ bundles researched reference material, specialized subagents, and an update work
 2. **Delegate big chunks to the specialized agents** (defined in `.claude/agents/`
    of the project, or `~/.claude/agents/` if installed user-level):
    - `aws-connect-architect` — solution/routing/integration design, ADR-style output
-   - `aws-connect-flow-builder` — author & validate flow-language JSON
+   - `aws-connect-flow-builder` — author, validate & repair flow-language JSON
+     (also transcribes flow-diagram images into importable flow JSON)
    - `aws-connect-backend-dev` — API integrations, Lambdas, data pipelines
    - `aws-connect-frontend-dev` — CCP/Streams/ChatJS/agent-workspace UIs
 

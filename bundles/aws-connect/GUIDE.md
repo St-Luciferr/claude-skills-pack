@@ -339,6 +339,13 @@ confirmed against live AWS docs before it's load-bearing.
 Monthly is a good cadence. It pulls new announcements since the changelog baseline,
 patches the affected references, and prepends changelog entries.
 
+That refreshes the *knowledge*. To pull a newer version of the **bundle itself** (new
+skills, updated references shipped upstream) into your install:
+
+```bash
+claude-packs update            # refreshes the registry, upgrades installed bundles
+```
+
 ---
 
 ## Where things live

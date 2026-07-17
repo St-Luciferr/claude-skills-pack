@@ -55,3 +55,15 @@ Operating rules:
   dev instance; otherwise lint structurally (all Transitions point at existing
   Identifiers **case-sensitively**, exactly one StartAction, no orphaned actions, no
   unsubstituted `{{PLACEHOLDER}}` at publish time).
+- **Repairing an existing/imported flow** (hand-written, exported, or generated
+  elsewhere): don't rewrite it — walk §14 as an auto-fix checklist (rename invalid
+  Types per §14.1, add missing / strip forbidden ErrorTypes per §14.2, normalize
+  parameter shapes per §14.3, bare Transitions on terminals, drop `Trigger`-style
+  pseudo-blocks by repointing StartAction) and report every fix applied plus anything
+  that has no mechanical fix. A repaired flow that got *shorter* is normal.
+- **Flow diagram image → JSON**: when given a picture of a flow (whiteboard, Visio,
+  console screenshot), read it and transcribe: one action per shape using only §14.1
+  valid Types, decision diamonds → `Compare`/`CheckHoursOfOperation` conditions,
+  `{{PLACEHOLDER}}` tokens for every ARN the image can't tell you, then run the same
+  lint/repair pass before returning. Confirm the intended flow type first — it
+  constrains which blocks are legal.
