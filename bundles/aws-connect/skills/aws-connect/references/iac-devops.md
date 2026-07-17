@@ -64,6 +64,14 @@ Complete `AWS::Connect::*` resource type list (CloudFormation Template Reference
 - **Deleting the resource releases the number** — usually unrecoverable (goes back to the pool; cooldown applies). Set `DeletionPolicy: Retain` / Terraform `prevent_destroy = true` on prod numbers. `CountryCode`/`Type`/`Prefix` changes are *replacement* = new number.
 - Number→flow mapping: CFN has no association resource; use the console, `AssociateFlow`/inbound number config APIs, or Terraform's `aws_connect_phone_number_contact_flow_association`.
 
+### Deploy gotcha: 51,200-byte template limit (hit early on Connect)
+
+`aws cloudformation deploy` / `create-stack` / `update-stack` reject a template passed inline (via `--template-body`) once it exceeds **51,200 bytes**: `Templates with a size greater than 51,200 bytes must be deployed via an S3 Bucket. Please add the --s3-bucket parameter to your command.` Connect stacks cross this threshold almost immediately because `AWS::Connect::ContactFlow` / `AWS::Connect::ContactFlowModule` embed the entire flow-language JSON inline in the `Content` property — one non-trivial flow can be tens of KB on its own.
+
+- **Fix (default):** always give `aws cloudformation deploy` an `--s3-bucket <bucket>` (plus optional `--s3-prefix`). `deploy` uploads the template there and references it by S3 URL, sidestepping the inline limit. Make deploy scripts ensure the bucket exists (`aws s3 mb` is idempotent-ish with `|| true`) and pass the flag unconditionally — it's harmless for small templates, so there's no reason to branch on size.
+- **Limits recap:** inline body max **51,200 bytes**; template uploaded to S3 max **1 MB** (`ValidationError` beyond that); resources per template **500**. If you approach the 1 MB / 500-resource ceilings, split into nested/layered stacks (see the layered-pipeline pattern below) rather than one mega-template.
+- **CDK/Terraform** don't hit the *inline* variant — CDK's `cdk deploy` stages templates and assets to its bootstrap bucket automatically, and Terraform's `aws_cloudformation_stack` uses `template_url` for large bodies — but the same 1 MB / 500-resource S3-side ceilings still apply, and CDK requires `cdk bootstrap` to have provisioned that staging bucket first.
+
 ### What CANNOT be managed via CloudFormation
 
 - **`ReplicateInstance`** (Global Resiliency replica creation) — API/CLI only.

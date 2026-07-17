@@ -140,7 +140,8 @@ Generation rules (non-negotiable):
   prompt text, tool list.
 - **deploy.sh**: idempotent, `set -euo pipefail`, takes `ENV` arg sourcing
   `config/$ENV.env`. Order: package/upload Lambdas → `aws cloudformation deploy`
-  → resolve real ARNs (by resource NAME lookups via `aws connect list-*`) →
+  **always with `--s3-bucket "$DEPLOY_BUCKET"`** (see next bullet) → resolve real
+  ARNs (by resource NAME lookups via `aws connect list-*`) →
   substitute placeholders into flow JSON (envsubst/jq) → `aws connect
   update-contact-flow-content` per flow → **publish** the flows (logs and runtime
   only see published content) → **associate the inbound flow to the claimed number**
@@ -149,6 +150,21 @@ Generation rules (non-negotiable):
   MCP tool registrations via CLI where CFN has no coverage → `scripts/provision-agents.sh`
   → smoke checks (describe each resource, validate flow content accepted). Print a
   post-deploy checklist of the manual steps.
+- **CFN template-size limit — deploy via S3, not inline.** `aws cloudformation deploy`
+  rejects any template body over **51,200 bytes** (`Templates with a size greater than
+  51,200 bytes must be deployed via an S3 Bucket. Please add the --s3-bucket parameter`).
+  Connect templates cross this almost immediately because `AWS::Connect::ContactFlow`/
+  `ContactFlowModule` embed the full flow JSON inline in `Content`. So **always pass
+  `--s3-bucket`** — don't wait for the error. Have deploy.sh ensure a bucket exists and
+  reuse it: `DEPLOY_BUCKET="${DEPLOY_BUCKET:-cfn-artifacts-$(aws sts get-caller-identity
+  --query Account --output text)-$AWS_REGION}"`, create it if missing
+  (`aws s3 mb "s3://$DEPLOY_BUCKET" 2>/dev/null || true`), then
+  `aws cloudformation deploy --template-file infra/template.yaml --stack-name "$STACK"
+  --s3-bucket "$DEPLOY_BUCKET" --capabilities CAPABILITY_NAMED_IAM ...`. (`deploy`
+  auto-uploads the template and any packaged artifacts to that bucket; `--s3-prefix`
+  optional.) If you'd rather keep templates small, move flow `Content` out of line via
+  `AWS::Include` transform or a separate `update-contact-flow-content` pass — but the
+  `--s3-bucket` flag is the robust default and costs nothing when the template is small.
 - Run whatever verification is cheap and available: `jq` every JSON artifact,
   `cfn-lint`/`aws cloudformation validate-template`, `shellcheck deploy.sh`,
   Lambda unit tests.

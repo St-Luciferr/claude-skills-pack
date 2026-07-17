@@ -124,6 +124,13 @@ shellcheck deploy.sh
 It packages Lambdas → deploys CFN → resolves ARNs → substitutes placeholders into flow
 JSON → pushes flow content → smoke-checks → prints a manual-steps checklist.
 
+> **CFN template over 51,200 bytes?** `aws cloudformation deploy` refuses an inline
+> template larger than that and tells you to `--s3-bucket`. Connect stacks hit this fast
+> because flow JSON is embedded inline in `AWS::Connect::ContactFlow.Content`. Fix:
+> always run `deploy` with `--s3-bucket <bucket>` (the generated `deploy.sh` does this
+> and creates the bucket for you). It's harmless on small templates, so don't wait for
+> the error.
+
 **Turn on flow logs now**, before you need them. This takes **two** steps — missing the
 second is a classic dead end:
 
