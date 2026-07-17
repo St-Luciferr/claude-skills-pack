@@ -84,11 +84,16 @@ claude-packs list                    list bundles + install status
 claude-packs info <bundle>           show a bundle's skills, agents, description
 claude-packs install <bundle...>     install one or more bundles
 claude-packs uninstall <bundle...>   remove installed bundles (only files it added)
-claude-packs update [bundle...]      re-copy latest bundle content over installs
+claude-packs update [bundle...]      refresh the registry + upgrade installs to latest
 claude-packs installed               list what's installed at the target
-claude-packs self-update             update the CLI + registry itself (git pull)
+claude-packs self-update             update the CLI + registry itself
 claude-packs self-uninstall          remove the CLI from this device
+claude-packs help [command]          detailed help (also: claude-packs <command> --help)
 ```
+
+Every command answers `--help` with its own detailed usage and examples.
+`self-update` works on any install: git-backed registries `git pull`; `--local`
+installs are offered a re-run of the installer, which switches them to git-backed.
 
 **Target flags** (apply to install/uninstall/update/list/installed):
 

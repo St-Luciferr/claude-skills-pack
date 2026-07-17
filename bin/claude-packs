@@ -39,8 +39,8 @@ warn() { printf '%swarning:%s %s\n' "$YELLOW" "$RESET" "$*" >&2; }
 confirm() { # $1=question -> 0 if yes
   local q="$1" ans
   [ -e /dev/tty ] || return 1
-  printf '%s [y/N] ' "$q" > /dev/tty 2>/dev/null || return 1
-  read -r ans < /dev/tty 2>/dev/null || return 1
+  { printf '%s [y/N] ' "$q" > /dev/tty; } 2>/dev/null || return 1
+  { read -r ans < /dev/tty; } 2>/dev/null || return 1
   case "$ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
@@ -438,17 +438,37 @@ EOF
   printf '\n'
 }
 
+INSTALLER_URL="https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh"
+
 cmd_self_update() {
+  local old_ver="$CLI_VERSION" new_ver
   if [ ! -d "${PKG_ROOT}/.git" ]; then
+    # --local installs have no git history — updating means re-running the installer,
+    # which replaces the registry with a fresh git-backed clone.
+    if [ "$IS_MANAGED" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+      say "Registry at ${PKG_ROOT} is not git-backed (installed with --local)."
+      if [ "$OPT_FORCE" -ne 1 ] && ! confirm "Re-run the installer to switch to a git-backed install?"; then
+        say "Aborted. Run manually:"
+        say "  curl -fsSL ${INSTALLER_URL} | bash"
+        return 0
+      fi
+      curl -fsSL "$INSTALLER_URL" | bash || die "installer failed."
+      return 0
+    fi
     die "can't self-update: ${PKG_ROOT} is not a git checkout.
 Re-run the installer to update to the latest version:
-  curl -fsSL https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh | bash"
+  curl -fsSL ${INSTALLER_URL} | bash"
   fi
   command -v git >/dev/null 2>&1 || die "git is required for self-update."
   printf '%sUpdating claude-packs registry in %s ...%s\n' "$DIM" "$PKG_ROOT" "$RESET"
   git -C "$PKG_ROOT" pull --ff-only || die "git pull failed."
-  printf '\n%s✓ claude-packs updated.%s Run %sclaude-packs update%s to push newer bundle content into your installs.\n\n' \
-    "$GREEN" "$RESET" "$CYAN" "$RESET"
+  new_ver="$(cat "${PKG_ROOT}/VERSION" 2>/dev/null || echo "$old_ver")"
+  if [ "$new_ver" != "$old_ver" ]; then
+    printf '\n%s✓ claude-packs updated%s %s(v%s → v%s)%s. Run %sclaude-packs update%s to push newer bundle content into your installs.\n\n' \
+      "$GREEN" "$RESET" "$DIM" "$old_ver" "$new_ver" "$RESET" "$CYAN" "$RESET"
+  else
+    printf '\n%s✓ claude-packs is up to date%s %s(v%s)%s.\n\n' "$GREEN" "$RESET" "$DIM" "$new_ver" "$RESET"
+  fi
 }
 
 cmd_self_uninstall() {
@@ -477,6 +497,135 @@ This looks like a source checkout — nothing to remove."
   printf '\n%s✓ claude-packs removed.%s\n\n' "$GREEN" "$RESET"
 }
 
+help_for() { # $1=command -> detailed per-command help
+  case "$1" in
+    list|ls) cat <<EOF
+
+${BOLD}claude-packs list${RESET} — list available bundles and their install status
+
+Shows every bundle in the registry with its version, contents summary, and whether
+it is installed at the target — flagging installs that are behind
+(${GREEN}✓ installed${RESET}${DIM} (1.1.0 → 1.2.0 available)${RESET}).
+
+${BOLD}Usage${RESET}
+  claude-packs list [--user | --project [dir]]
+EOF
+      ;;
+    info|show) cat <<EOF
+
+${BOLD}claude-packs info <bundle>${RESET} — show a bundle's details
+
+Prints the bundle's description, tags, guide location, and the exact skills and
+agents it installs.
+
+${BOLD}Usage${RESET}
+  claude-packs info aws-connect
+EOF
+      ;;
+    install|add) cat <<EOF
+
+${BOLD}claude-packs install <bundle...>${RESET} — install one or more bundles
+
+Copies the bundle's skills into <target>/skills and agents into <target>/agents,
+and records them in a receipt (${RESET}${DIM}<target>/.claude-packs${RESET}) so update/uninstall know
+what this tool owns. Files that exist but are NOT tracked by the receipt prompt
+before being overwritten (skip with --force).
+
+${BOLD}Usage${RESET}
+  claude-packs install <bundle...> [--user | --project [dir]] [--force]
+
+${BOLD}Examples${RESET}
+  claude-packs install aws-connect              # into ~/.claude (all projects)
+  claude-packs install aws-connect --project .  # into ./.claude (this project)
+
+Restart Claude Code afterwards — skills and agents load at session start.
+EOF
+      ;;
+    uninstall|remove|rm) cat <<EOF
+
+${BOLD}claude-packs uninstall <bundle...>${RESET} — remove installed bundles
+
+Removes only the skills/agents the receipt says this tool installed; anything you
+added yourself is left alone.
+
+${BOLD}Usage${RESET}
+  claude-packs uninstall <bundle...> [--user | --project [dir]]
+EOF
+      ;;
+    update|upgrade) cat <<EOF
+
+${BOLD}claude-packs update [bundle...]${RESET} — upgrade installed bundles to the latest
+
+With no arguments, updates every bundle installed at the target. For a managed
+git-backed install it refreshes the registry first (git pull), then re-copies the
+latest bundle content over the install, prunes skills/agents a newer bundle
+version no longer ships, and prints each version transition.
+
+Also effectively updates the CLI: the registry pull brings the newest
+bin/claude-packs along with the bundles.
+
+${BOLD}Usage${RESET}
+  claude-packs update [bundle...] [--user | --project [dir]]
+
+${DIM}Upgrading from a CLI older than v1.2.0? Run "claude-packs self-update" once
+first — older CLIs don't refresh the registry on update.${RESET}
+EOF
+      ;;
+    installed) cat <<EOF
+
+${BOLD}claude-packs installed${RESET} — list what is installed at the target
+
+Reads the install receipt and prints each bundle with its version and item counts.
+
+${BOLD}Usage${RESET}
+  claude-packs installed [--user | --project [dir]]
+EOF
+      ;;
+    self-update) cat <<EOF
+
+${BOLD}claude-packs self-update${RESET} — update the CLI + registry itself
+
+Git-backed installs: git pull in the registry (${RESET}${DIM}${PKG_ROOT}${RESET}) — this updates the
+claude-packs CLI and all bundle content in one step. Installs made with
+"install.sh --local" have no git history; self-update offers to re-run the
+installer, which switches them to a git-backed install.
+
+Follow with ${CYAN}claude-packs update${RESET} to push the newer bundle content into your
+installed targets.
+
+${BOLD}Usage${RESET}
+  claude-packs self-update [--force]
+EOF
+      ;;
+    self-uninstall) cat <<EOF
+
+${BOLD}claude-packs self-uninstall${RESET} — remove the CLI from this device
+
+Deletes the managed registry and the launcher on your PATH. Bundles already
+installed into projects or ~/.claude are NOT touched — remove those first with
+"claude-packs uninstall".
+
+${BOLD}Usage${RESET}
+  claude-packs self-uninstall [--force]
+EOF
+      ;;
+    help) cat <<EOF
+
+${BOLD}claude-packs help [command]${RESET} — show help
+
+Without a command, prints the global usage. With one, prints that command's
+detailed help (same as ${CYAN}claude-packs <command> --help${RESET}).
+EOF
+      ;;
+    *)
+      warn "no such command \"$1\""
+      usage
+      return 1
+      ;;
+  esac
+  printf '\n'
+}
+
 usage() {
   cat <<EOF
 
@@ -490,10 +639,11 @@ ${BOLD}Commands${RESET}
   ${CYAN}info${RESET} <bundle>              show a bundle's skills, agents, and description
   ${CYAN}install${RESET} <bundle...>        install one or more bundles
   ${CYAN}uninstall${RESET} <bundle...>      remove installed bundles
-  ${CYAN}update${RESET} [bundle...]         re-copy latest bundle content over installs
+  ${CYAN}update${RESET} [bundle...]         refresh the registry + upgrade installs to latest
   ${CYAN}installed${RESET}                  list bundles installed at the target
-  ${CYAN}self-update${RESET}                update the claude-packs CLI itself (git pull)
+  ${CYAN}self-update${RESET}                update the claude-packs CLI + registry itself
   ${CYAN}self-uninstall${RESET}             remove the claude-packs CLI from this device
+  ${CYAN}help${RESET} [command]             detailed help for a command (or: <command> --help)
 
 ${BOLD}Options${RESET}
   -u, --user                 install into ~/.claude  ${DIM}(default; all projects)${RESET}
@@ -515,6 +665,7 @@ EOF
 
 # --- arg parsing ----------------------------------------------------------------
 OPT_FORCE=0
+OPT_HELP=0
 BUNDLE_ARGS=()
 COMMAND=''
 
@@ -526,7 +677,7 @@ while [ $# -gt 0 ]; do
       if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then OPT_PROJECT="$1"; shift; else OPT_PROJECT=""; fi
       ;;
     -f|--force) OPT_FORCE=1; shift ;;
-    -h|--help) usage; exit 0 ;;
+    -h|--help) OPT_HELP=1; shift ;;
     -V|--version) printf '%s\n' "$CLI_VERSION"; exit 0 ;;
     -*) die "unknown option: $1 (see --help)" ;;
     *)
@@ -536,10 +687,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# `claude-packs <command> --help` → that command's help; bare --help → global usage
+if [ "$OPT_HELP" -eq 1 ]; then
+  if [ -n "$COMMAND" ] && [ "$COMMAND" != "help" ]; then help_for "$COMMAND"; else usage; fi
+  exit $?
+fi
+
 [ -n "$COMMAND" ] || { usage; exit 0; }
 
 case "$COMMAND" in
-  help)                usage ;;
+  help)
+    if [ "${#BUNDLE_ARGS[@]}" -gt 0 ]; then help_for "${BUNDLE_ARGS[0]}"; else usage; fi
+    ;;
   list|ls)             cmd_list ;;
   info|show)           cmd_info ;;
   install|add)         cmd_install ;;
