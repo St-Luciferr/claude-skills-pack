@@ -154,50 +154,82 @@ Generation rules (non-negotiable):
     { "Key": "Project",   "Value": "evoke-poc" }
   ]
   ```
-- **deploy.sh**: idempotent, `set -euo pipefail`, takes `ENV` arg sourcing
-  `config/$ENV.env`. Order: package/upload Lambdas → `aws cloudformation deploy`
-  **always with `--s3-bucket "$DEPLOY_BUCKET"`** (see below) **and `--tags` from
-  `tags.json`** (see below) → resolve real ARNs (by resource NAME lookups via
-  `aws connect list-*`) →
-  substitute placeholders into flow JSON (envsubst/jq) → `aws connect
-  update-contact-flow-content` per flow → **publish** the flows (logs and runtime
-  only see published content) → **associate the inbound flow to the claimed number**
-  (`aws connect associate-phone-number-contact-flow` — CFN has no resource for this, so
-  without it the number rings into nothing) → create/update AI prompts & agents and
-  MCP tool registrations via CLI where CFN has no coverage → `scripts/provision-agents.sh`
-  → smoke checks (describe each resource, validate flow content accepted). Print a
-  post-deploy checklist of the manual steps.
-- **CFN template-size limit — deploy via S3, not inline.** `aws cloudformation deploy`
-  rejects any template body over **51,200 bytes** (`Templates with a size greater than
-  51,200 bytes must be deployed via an S3 Bucket. Please add the --s3-bucket parameter`).
-  Connect templates cross this almost immediately because `AWS::Connect::ContactFlow`/
-  `ContactFlowModule` embed the full flow JSON inline in `Content`. So **always pass
-  `--s3-bucket`** — don't wait for the error. Have deploy.sh ensure a bucket exists and
-  reuse it: `DEPLOY_BUCKET="${DEPLOY_BUCKET:-cfn-artifacts-$(aws sts get-caller-identity
-  --query Account --output text)-$AWS_REGION}"`, create it if missing
-  (`aws s3 mb "s3://$DEPLOY_BUCKET" 2>/dev/null || true`), then
-  `aws cloudformation deploy --template-file infra/template.yaml --stack-name "$STACK"
-  --s3-bucket "$DEPLOY_BUCKET" --capabilities CAPABILITY_NAMED_IAM ...`. (`deploy`
-  auto-uploads the template and any packaged artifacts to that bucket; `--s3-prefix`
-  optional.) If you'd rather keep templates small, move flow `Content` out of line via
-  `AWS::Include` transform or a separate `update-contact-flow-content` pass — but the
-  `--s3-bucket` flag is the robust default and costs nothing when the template is small.
-- **Tagging — apply `tags.json` on the stack.** The two CFN CLI verbs take `--tags` in
-  *different* shapes, so keep `tags.json` (the JSON-array form) as the source of truth
-  and adapt per verb:
-  - `aws cloudformation deploy` wants **space-separated `Key=Value`** pairs, not JSON —
-    convert with jq:
-    ```bash
-    TAGS=$(jq -r '.[] | "\(.Key)=\(.Value)"' tags.json)
-    aws cloudformation deploy --template-file infra/template.yaml --stack-name "$STACK" \
-      --s3-bucket "$DEPLOY_BUCKET" --capabilities CAPABILITY_NAMED_IAM \
-      --tags $TAGS                       # word-split intentional; keep tag values space-free
-    ```
-  - `aws cloudformation create-stack` / `update-stack` take the **JSON array directly**:
-    `--tags file://tags.json`.
-  Stack-level tags propagate to every resource CloudFormation creates that supports
-  tagging. Values containing spaces need the `create-stack`/`file://` path (or a quoted
-  loop), so prefer space-free tag values for the `deploy` route.
+- **deploy.sh**: one idempotent, re-runnable entrypoint. `set -euo pipefail`. Sources
+  per-env `config/$ENV.env` (keep multi-env — do NOT hard-code a single `ENVIRONMENT`).
+  **Dispatch subcommands**: `deploy` (default), `cleanup`, `status` (add a domain verb
+  like `dial`/`send` only if a demo driver is genuinely useful). Honor env-var overrides
+  that let CI skip interactive/creation steps (`CONNECT_INSTANCE_ID`, `AI_ASSISTANT_ID`,
+  `AWS_DEFAULT_REGION`, `AUTO_CONFIRM`). Before mutating anything, echo account / region /
+  caller ARN and — when interactive and `AUTO_CONFIRM` is unset — prompt to confirm the
+  target account+region; a wrong-account deploy is expensive to undo.
+  - **deploy order**: seed any SSM params CFN reads at deploy time (see SSM bullet) →
+    upload template to S3 + create/update the stack (see CFN bullet) → update Lambda code
+    **with retry** (`ResourceConflictException` is normal mid-update; retry ×3 then
+    `aws lambda wait function-updated`) → resolve real ARNs/IDs by **NAME** lookup
+    (`aws connect list-*`, `list-instances`, `qconnect list-*`) → substitute placeholders
+    into flow JSON (envsubst/jq) → `aws connect update-contact-flow-content` per flow →
+    **publish** the flows (logs and runtime only see published content) → **associate the
+    inbound flow to the claimed number** (`associate-phone-number-contact-flow` — CFN has
+    no resource for this, so without it the number rings into nothing) → create/reconcile
+    the CLI-only resources (AI prompts & agents, Q assistant, knowledge base, AgentCore
+    gateway/target, integration associations) → inject real IDs into the tool Lambdas' env
+    and `put-parameter --overwrite` the SSM placeholders → `scripts/provision-agents.sh` →
+    smoke checks (describe each resource, validate flow content accepted). Print the
+    manual-steps checklist.
+  - **Every create step is create-or-select, keyed by NAME**: list existing → reuse and
+    capture its id/arn if found → else create and wait for `ACTIVE`/`READY`. This is what
+    makes re-runs safe and is the CLI-side analogue of the flow-ARN-by-name rule; never
+    assume a resource is absent.
+  - **cleanup** mirrors deploy in **reverse dependency order**: gateway target → gateway →
+    credential provider → gateway IAM role → assistant associations → assistant →
+    knowledge base → integration associations → empty S3 buckets → `delete-stack`
+    (`wait stack-delete-complete`) → delete the template bucket. **Never delete resources
+    deploy did not create** — above all a pre-existing/shared Connect instance (print the
+    manual `delete-instance` command instead). Guard cleanup behind an explicit `yes`
+    confirmation.
+- **CloudFormation — upload to S3, branch create vs update, recover from wedged states.**
+  Connect templates cross the **51,200-byte inline limit** almost immediately
+  (`AWS::Connect::ContactFlow`/`ContactFlowModule` embed the whole flow JSON in
+  `Content` — `Templates with a size greater than 51,200 bytes must be deployed via an S3
+  Bucket`), so the generated deploy.sh must never pass the template inline. Two acceptable
+  shapes; **prefer the first** for anything that must survive partial failures and re-runs:
+  - **Recommended — explicit S3 upload + create/update-stack** (what real deployers
+    converge on). Ensure a **versioned, region-correct** template bucket exists —
+    `create-bucket` needs `--create-bucket-configuration LocationConstraint=$REGION` in
+    **every region except us-east-1**, which *rejects* that flag → `aws s3 cp` the template
+    under a **timestamped key** (`infrastructure-<ts>.yaml`; avoids stale-object confusion)
+    → build the `https://s3.$REGION.amazonaws.com/$BUCKET/$KEY` URL → branch: if the stack
+    exists, `update-stack --template-url …` (swallow the `No updates are to be performed`
+    nonzero exit so `set -e` doesn't abort a no-op deploy), else `create-stack
+    --template-url …`; then the matching `aws cloudformation wait
+    stack-{create,update}-complete`. **Before that branch, clear a wedged prior attempt:**
+    a stack in `ROLLBACK_COMPLETE`/`ROLLBACK_FAILED`/`CREATE_FAILED`/`DELETE_FAILED` cannot
+    be updated — `delete-stack` + wait, then create fresh; if the delete itself stalls on
+    `DELETE_FAILED` resources (e.g. a custom resource whose Lambda never responded), re-issue
+    `delete-stack --retain-resources <LogicalIds>` for exactly those. The
+    ROLLBACK_COMPLETE trap bites essentially every first deploy whose initial create
+    failed, and `aws cloudformation deploy` is stuck by it just the same — handling it is
+    the main reason to prefer this explicit path.
+  - **Simpler alternative — `aws cloudformation deploy`**: `--template-file … --s3-bucket
+    $BUCKET --capabilities CAPABILITY_NAMED_IAM …`. It uploads the template for you and is
+    create-or-update in one call, but it does **not** auto-recover from `ROLLBACK_COMPLETE`
+    and returns nonzero on "no changes". Fine for small, low-churn stacks.
+- **Tagging — `--tags file://tags.json` on BOTH create and update.** On the recommended
+  path, `create-stack`/`update-stack` take the `tags.json` array **directly**
+  (`--tags file://tags.json`) — no conversion, spaces in values are fine. **Pass it on
+  `update-stack` too, not only `create-stack`:** CloudFormation *replaces* the tag set on
+  update, so omitting `--tags` on a later deploy silently strips every tag from the stack
+  and its resources. (Only if you fall back to `aws cloudformation deploy` do you need the
+  `Key=Value` form — `--tags $(jq -r '.[]|"\(.Key)=\(.Value)"' tags.json)`, values
+  space-free.) Stack-level tags propagate to every taggable resource CloudFormation creates.
+- **SSM seed-then-overwrite for deploy-time param resolution.** When the template reads a
+  value via a `{{resolve:ssm:…}}` reference or an SSM-typed parameter that only *exists
+  after* a CLI-created resource (the Connect instance id, a Bedrock KB id), seed that SSM
+  parameter with a `PENDING` placeholder **before** the stack step so create/update doesn't
+  fail on a missing param, then `put-parameter --overwrite` the real value once the CLI
+  resource exists (and inject the same value into the tool Lambdas' env). Call out service
+  mismatches in the output — e.g. a `qconnect` knowledge-base id is NOT a
+  `bedrock-agent-runtime` KB id and won't work in a `searchKnowledgeBase` Lambda.
 - Run whatever verification is cheap and available: `jq` every JSON artifact,
   `cfn-lint`/`aws cloudformation validate-template`, `shellcheck deploy.sh`,
   Lambda unit tests.

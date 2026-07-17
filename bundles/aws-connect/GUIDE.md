@@ -119,18 +119,25 @@ shellcheck deploy.sh
 ## 5. Deploy
 
 ```bash
-./deploy.sh dev
+./deploy.sh dev              # deploy (default)
+./deploy.sh dev status       # what's currently deployed
+./deploy.sh dev cleanup      # tear it all down in reverse order
 ```
 
-It packages Lambdas → deploys CFN → resolves ARNs → substitutes placeholders into flow
-JSON → pushes flow content → smoke-checks → prints a manual-steps checklist.
+Deploy packages Lambdas → uploads the CFN template to S3 and creates/updates the stack →
+resolves ARNs by name → substitutes placeholders into flow JSON → pushes & publishes flow
+content → associates the flow to the number → reconciles CLI-only resources (Q assistant,
+KB, gateway) → smoke-checks → prints a manual-steps checklist. Every step is
+create-or-select, so re-running is safe.
 
-> **CFN template over 51,200 bytes?** `aws cloudformation deploy` refuses an inline
-> template larger than that and tells you to `--s3-bucket`. Connect stacks hit this fast
-> because flow JSON is embedded inline in `AWS::Connect::ContactFlow.Content`. Fix:
-> always run `deploy` with `--s3-bucket <bucket>` (the generated `deploy.sh` does this
-> and creates the bucket for you). It's harmless on small templates, so don't wait for
-> the error.
+> **CFN template over 51,200 bytes?** CloudFormation refuses an *inline* template larger
+> than that. Connect stacks hit it fast because flow JSON is embedded inline in
+> `AWS::Connect::ContactFlow.Content`. The generated `deploy.sh` sidesteps it by uploading
+> the template to S3 (a versioned bucket it creates) and calling `create-stack`/
+> `update-stack --template-url`, which also lets it **auto-recover a stack wedged in
+> `ROLLBACK_COMPLETE`** from a failed first create — delete-and-recreate rather than
+> erroring out. (The simpler `aws cloudformation deploy --s3-bucket` works too but can't
+> unstick a rolled-back stack.)
 
 **Turn on flow logs now**, before you need them. This takes **two** steps — missing the
 second is a classic dead end:
