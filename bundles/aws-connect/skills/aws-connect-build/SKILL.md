@@ -78,6 +78,7 @@ Produce this layout (adapt names to the project):
 │   └── agents.yaml               # agent roster — operational data, not IaC
 ├── scripts/
 │   └── provision-agents.sh       # idempotent roster → Connect reconciler
+├── tags.json                     # stack-level cost/ownership tags, applied via --tags
 └── deploy.sh
 ```
 
@@ -138,10 +139,26 @@ Generation rules (non-negotiable):
   formatting requirement where applicable. Store as YAML with fields:
   name, type (ANSWER_RECOMMENDATION / SELF_SERVICE / orchestrator), model config,
   prompt text, tool list.
+- **tags.json** (always generated): a top-level JSON array of `{"Key":..,"Value":..}`
+  objects — the CloudFormation `--tags` / `create-stack --tags` shape — carrying
+  cost-allocation and ownership tags (at minimum `Name`, `Project`, `Creator`,
+  `Deletable`). Ask the user for the values (project name, creator, whether the stack
+  is deletable) and fall back to sensible defaults from the solution name. Keep it as a
+  single canonical artifact and reference it from deploy.sh (see below) rather than
+  hard-coding tags in the script. Example:
+  ```json
+  [
+    { "Key": "Name",      "Value": "evoke-poc" },
+    { "Key": "Creator",   "Value": "jenish" },
+    { "Key": "Deletable", "Value": "false" },
+    { "Key": "Project",   "Value": "evoke-poc" }
+  ]
+  ```
 - **deploy.sh**: idempotent, `set -euo pipefail`, takes `ENV` arg sourcing
   `config/$ENV.env`. Order: package/upload Lambdas → `aws cloudformation deploy`
-  **always with `--s3-bucket "$DEPLOY_BUCKET"`** (see next bullet) → resolve real
-  ARNs (by resource NAME lookups via `aws connect list-*`) →
+  **always with `--s3-bucket "$DEPLOY_BUCKET"`** (see below) **and `--tags` from
+  `tags.json`** (see below) → resolve real ARNs (by resource NAME lookups via
+  `aws connect list-*`) →
   substitute placeholders into flow JSON (envsubst/jq) → `aws connect
   update-contact-flow-content` per flow → **publish** the flows (logs and runtime
   only see published content) → **associate the inbound flow to the claimed number**
@@ -165,6 +182,22 @@ Generation rules (non-negotiable):
   optional.) If you'd rather keep templates small, move flow `Content` out of line via
   `AWS::Include` transform or a separate `update-contact-flow-content` pass — but the
   `--s3-bucket` flag is the robust default and costs nothing when the template is small.
+- **Tagging — apply `tags.json` on the stack.** The two CFN CLI verbs take `--tags` in
+  *different* shapes, so keep `tags.json` (the JSON-array form) as the source of truth
+  and adapt per verb:
+  - `aws cloudformation deploy` wants **space-separated `Key=Value`** pairs, not JSON —
+    convert with jq:
+    ```bash
+    TAGS=$(jq -r '.[] | "\(.Key)=\(.Value)"' tags.json)
+    aws cloudformation deploy --template-file infra/template.yaml --stack-name "$STACK" \
+      --s3-bucket "$DEPLOY_BUCKET" --capabilities CAPABILITY_NAMED_IAM \
+      --tags $TAGS                       # word-split intentional; keep tag values space-free
+    ```
+  - `aws cloudformation create-stack` / `update-stack` take the **JSON array directly**:
+    `--tags file://tags.json`.
+  Stack-level tags propagate to every resource CloudFormation creates that supports
+  tagging. Values containing spaces need the `create-stack`/`file://` path (or a quoted
+  loop), so prefer space-free tag values for the `deploy` route.
 - Run whatever verification is cheap and available: `jq` every JSON artifact,
   `cfn-lint`/`aws cloudformation validate-template`, `shellcheck deploy.sh`,
   Lambda unit tests.

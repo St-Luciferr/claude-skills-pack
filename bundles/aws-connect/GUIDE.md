@@ -97,6 +97,7 @@ acme-support/
 ├── flows/*.flow.json            # ARNs as ${Placeholders}, never hard-coded
 ├── lambdas/customer-lookup/     # + unit tests
 ├── config/dev.env, prod.env
+├── tags.json                    # cost/ownership tags, applied via CFN --tags
 └── deploy.sh
 ```
 
