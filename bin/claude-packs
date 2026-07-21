@@ -497,8 +497,228 @@ This looks like a source checkout — nothing to remove."
   printf '\n%s✓ claude-packs removed.%s\n\n' "$GREEN" "$RESET"
 }
 
+# --- interactive TUI ------------------------------------------------------------
+# A full-screen, arrow-key menu for browsing and managing bundles. Pure ANSI +
+# bash reads — no ncurses, no external TUI deps. Reuses the cmd_* functions so
+# install/uninstall/update behave identically to the non-interactive commands.
+tui_enter_screen() { printf '\033[?1049h\033[?25l'; }   # alt buffer, hide cursor
+tui_leave_screen() { printf '\033[?25h\033[?1049l'; }   # show cursor, main buffer
+
+# read a single keypress into $KEY; expand ESC-[ arrow sequences. Returns 1 on EOF.
+read_key() {
+  local rest
+  KEY=''
+  IFS= read -rsn1 KEY </dev/tty 2>/dev/null || return 1
+  if [ "$KEY" = $'\033' ]; then
+    # arrow keys arrive as ESC [ A/B — the trailing bytes are already buffered, so
+    # this returns instantly; a lone ESC just waits out the 1s timeout then quits.
+    IFS= read -rsn2 -t 1 rest </dev/tty 2>/dev/null || rest=''
+    KEY="$KEY$rest"
+  fi
+  return 0
+}
+
+tui_target() {
+  if [ "$TUI_TARGET_MODE" = project ]; then
+    printf '%s/.claude\n' "$(cd "$TUI_PROJECT_DIR" 2>/dev/null && pwd || printf '%s' "$TUI_PROJECT_DIR")"
+  else
+    printf '%s/.claude\n' "$HOME"
+  fi
+}
+
+# (re)load bundle rows into the parallel arrays the drawer reads.
+tui_load() {
+  NAMES=(); VERS=(); TITLES=(); INST=(); SEL=()
+  local target name m
+  target="$(tui_target)"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    m="${BUNDLES_DIR}/${name}/bundle.json"
+    NAMES[${#NAMES[@]}]="$name"
+    VERS[${#VERS[@]}]="$(bundle_version "$m")"
+    TITLES[${#TITLES[@]}]="$(manifest_scalar "$m" title)"
+    INST[${#INST[@]}]="$(receipt_version "$target" "$name")"
+    SEL[${#SEL[@]}]=0
+  done < <(list_bundle_names)
+  local n=${#NAMES[@]}
+  if [ "$n" -eq 0 ]; then cursor=0
+  elif [ "$cursor" -ge "$n" ]; then cursor=$((n - 1)); fi
+  [ "$cursor" -ge 0 ] || cursor=0
+  return 0
+}
+
+tui_draw() {
+  local target ptarget i rowcur marker name ver inst badge
+  target="$(tui_target)"; ptarget="$(pretty_target "$target")"
+  printf '\033[H\033[2J'
+  printf '  %s%sclaude-packs%s %sv%s%s  %s— interactive%s\n' \
+    "$BOLD" "$CYAN" "$RESET" "$DIM" "$CLI_VERSION" "$RESET" "$DIM" "$RESET"
+  printf '  %sTarget%s %s   %s(press t to change)%s\n\n' "$DIM" "$RESET" "$ptarget" "$DIM" "$RESET"
+
+  for i in "${!NAMES[@]}"; do
+    name="${NAMES[$i]}"; ver="${VERS[$i]}"; inst="${INST[$i]}"
+    if [ "$i" -eq "$cursor" ]; then rowcur="${CYAN}❯${RESET}"; else rowcur=' '; fi
+    if [ "${SEL[$i]}" = 1 ]; then marker="${GREEN}◉${RESET}"; else marker="${DIM}◯${RESET}"; fi
+    if [ -n "$inst" ]; then
+      if [ "$inst" != "$ver" ]; then
+        badge="${GREEN}✓ installed${RESET}${DIM} (${inst} → ${ver})${RESET}"
+      else
+        badge="${GREEN}✓ installed${RESET}"
+      fi
+    else
+      badge="${DIM}not installed${RESET}"
+    fi
+    printf ' %s %s %s%s%-20s%s %sv%s%s  %s\n' \
+      "$rowcur" "$marker" "$BOLD" "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$badge"
+    [ -n "${TITLES[$i]}" ] && printf '       %s%s%s\n' "$DIM" "${TITLES[$i]}" "$RESET"
+  done
+
+  printf '\n  %s↑/↓%s move   %sspace%s select   %sa%s all   %senter%s info\n' \
+    "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
+  printf '  %si%s install   %sx%s uninstall   %su%s update   %st%s target   %sq%s quit\n' \
+    "$GREEN" "$RESET" "$RED" "$RESET" "$CYAN" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
+  [ -n "$TUI_MSG" ] && printf '\n  %s\n' "$TUI_MSG"
+  return 0   # never let a false trailing test trip `set -e` from the draw loop
+}
+
+# select-all / clear-all toggle
+tui_toggle_all() {
+  local i all=1
+  for i in "${!NAMES[@]}"; do [ "${SEL[$i]}" = 1 ] || all=0; done
+  for i in "${!NAMES[@]}"; do
+    if [ "$all" = 1 ]; then SEL[$i]=0; else SEL[$i]=1; fi
+  done
+  return 0
+}
+
+# run cmd_install / cmd_uninstall / cmd_update over the selected bundles (or, if
+# none are selected, the one under the cursor), then reload status.
+tui_run_action() { # $1 = command function name
+  local fn="$1" i any=0
+  BUNDLE_ARGS=()
+  for i in "${!NAMES[@]}"; do
+    if [ "${SEL[$i]}" = 1 ]; then BUNDLE_ARGS[${#BUNDLE_ARGS[@]}]="${NAMES[$i]}"; any=1; fi
+  done
+  [ "$any" = 1 ] || BUNDLE_ARGS=("${NAMES[$cursor]}")
+  if [ "$TUI_TARGET_MODE" = project ]; then OPT_PROJECT="$TUI_PROJECT_DIR"; else unset OPT_PROJECT 2>/dev/null || true; fi
+  OPT_FORCE=0
+  printf '\033[?25h\033[H\033[2J'
+  "$fn" || true
+  printf '%s  Press any key to return to the menu ...%s' "$DIM" "$RESET"
+  local _k; IFS= read -rsn1 _k </dev/tty 2>/dev/null || true
+  printf '\033[?25l'
+  tui_load
+}
+
+tui_info_pause() {
+  BUNDLE_ARGS=("${NAMES[$cursor]}")
+  printf '\033[?25h\033[H\033[2J'
+  cmd_info || true
+  printf '%s  Press any key to return to the menu ...%s' "$DIM" "$RESET"
+  local _k; IFS= read -rsn1 _k </dev/tty 2>/dev/null || true
+  printf '\033[?25l'
+}
+
+tui_change_target() {
+  local ans dir
+  printf '\033[?25h\033[H\033[2J'
+  printf '\n  %sChoose install target%s\n\n' "$BOLD" "$RESET"
+  printf '    %s1%s  ~/.claude          %s(user — applies to all projects)%s\n' "$CYAN" "$RESET" "$DIM" "$RESET"
+  printf '    %s2%s  <dir>/.claude      %s(a single project)%s\n\n' "$CYAN" "$RESET" "$DIM" "$RESET"
+  printf '  Select [1/2] (Enter keeps current): '
+  IFS= read -r ans </dev/tty || { printf '\033[?25l'; return 0; }
+  case "$ans" in
+    1) TUI_TARGET_MODE=user ;;
+    2)
+      printf '  Project directory [%s]: ' "$PWD"
+      IFS= read -r dir </dev/tty || dir=''
+      [ -n "$dir" ] || dir="$PWD"
+      case "$dir" in
+        '~')   dir="$HOME" ;;
+        '~/'*) dir="${HOME}/${dir#\~/}" ;;
+      esac
+      if [ -d "$dir" ]; then
+        TUI_TARGET_MODE=project
+        TUI_PROJECT_DIR="$(cd "$dir" && pwd)"
+      else
+        TUI_MSG="${RED}no such directory: ${dir}${RESET}"
+      fi
+      ;;
+  esac
+  printf '\033[?25l'
+  tui_load
+}
+
+cmd_tui() {
+  [ -e /dev/tty ] || die "the interactive menu needs a terminal (no /dev/tty available).
+Use the non-interactive commands instead, e.g. \"claude-packs list\"."
+  [ -n "$(list_bundle_names)" ] || { say "No bundles found in ${BUNDLES_DIR}."; return 0; }
+
+  # honor an initial --project/--user flag as the starting target; `t` changes it later
+  if [ -n "${OPT_PROJECT+x}" ]; then
+    TUI_TARGET_MODE=project
+    TUI_PROJECT_DIR="${OPT_PROJECT:-$PWD}"
+    [ -d "$TUI_PROJECT_DIR" ] || TUI_PROJECT_DIR="$PWD"
+  else
+    TUI_TARGET_MODE=user
+    TUI_PROJECT_DIR="$PWD"
+  fi
+  TUI_MSG=''
+  cursor=0
+  NAMES=(); VERS=(); TITLES=(); INST=(); SEL=()
+
+  trap 'tui_leave_screen' EXIT INT TERM
+  tui_enter_screen
+  tui_load
+
+  local n
+  while :; do
+    tui_draw
+    read_key || break
+    TUI_MSG=''
+    n=${#NAMES[@]}
+    case "$KEY" in
+      k|$'\033[A') if [ "$cursor" -gt 0 ]; then cursor=$((cursor - 1)); else cursor=$((n - 1)); fi ;;
+      j|$'\033[B') if [ "$cursor" -lt $((n - 1)) ]; then cursor=$((cursor + 1)); else cursor=0; fi ;;
+      ' ') if [ "${SEL[$cursor]}" = 1 ]; then SEL[$cursor]=0; else SEL[$cursor]=1; fi ;;
+      a|A) tui_toggle_all ;;
+      i|I) tui_run_action cmd_install ;;
+      x|X|d|D) tui_run_action cmd_uninstall ;;
+      u|U) tui_run_action cmd_update ;;
+      t|T) tui_change_target ;;
+      r|R) tui_load; TUI_MSG="${DIM}refreshed${RESET}" ;;
+      ''|$'\r'|$'\n') tui_info_pause ;;
+      q|Q|$'\033') break ;;
+    esac
+  done
+
+  tui_leave_screen
+  trap - EXIT INT TERM
+}
+
 help_for() { # $1=command -> detailed per-command help
   case "$1" in
+    tui|ui|menu) cat <<EOF
+
+${BOLD}claude-packs tui${RESET} — interactive full-screen menu
+
+Browse every bundle in one screen and install, uninstall, or update them without
+memorizing commands. Multi-select with space (or ${BOLD}a${RESET} for all), then act on the
+selection; with nothing selected, actions apply to the row under the cursor.
+Switch between installing to ~/.claude (user) and a project's .claude with ${BOLD}t${RESET}.
+
+Running ${CYAN}claude-packs${RESET} with no command on a terminal opens this menu.
+
+${BOLD}Keys${RESET}
+  ↑/↓ or k/j   move          space   select/deselect      a   select all / none
+  i            install       x       uninstall            u   update
+  enter        show info     t       change target        r   refresh
+  q or ESC     quit
+
+${BOLD}Usage${RESET}
+  claude-packs tui
+EOF
+      ;;
     list|ls) cat <<EOF
 
 ${BOLD}claude-packs list${RESET} — list available bundles and their install status
@@ -635,6 +855,7 @@ ${BOLD}Usage${RESET}
   claude-packs <command> [bundles...] [options]
 
 ${BOLD}Commands${RESET}
+  ${CYAN}tui${RESET}                        interactive menu to browse and manage bundles
   ${CYAN}list${RESET}                       list available bundles and install status
   ${CYAN}info${RESET} <bundle>              show a bundle's skills, agents, and description
   ${CYAN}install${RESET} <bundle...>        install one or more bundles
@@ -653,6 +874,8 @@ ${BOLD}Options${RESET}
   -V, --version              print version
 
 ${BOLD}Examples${RESET}
+  claude-packs                                  # open the interactive menu
+  claude-packs tui
   claude-packs list
   claude-packs install aws-connect --user
   claude-packs install aws-connect --project .
@@ -693,12 +916,17 @@ if [ "$OPT_HELP" -eq 1 ]; then
   exit $?
 fi
 
-[ -n "$COMMAND" ] || { usage; exit 0; }
+# Bare invocation on a terminal opens the interactive menu; otherwise print usage
+# (keeps piped/non-interactive `claude-packs` behaving as documentation).
+if [ -z "$COMMAND" ]; then
+  if [ -t 1 ] && [ -e /dev/tty ]; then cmd_tui; exit $?; else usage; exit 0; fi
+fi
 
 case "$COMMAND" in
   help)
     if [ "${#BUNDLE_ARGS[@]}" -gt 0 ]; then help_for "${BUNDLE_ARGS[0]}"; else usage; fi
     ;;
+  tui|ui|menu)         cmd_tui ;;
   list|ls)             cmd_list ;;
   info|show)           cmd_info ;;
   install|add)         cmd_install ;;

@@ -38,6 +38,30 @@ then unavailable, since there's no git remote behind it).
 
 ## Use it
 
+The quickest way in is the **interactive menu** — run `claude-packs` with no arguments
+(or `claude-packs tui`) and browse, select, and manage bundles from one screen:
+
+```
+claude-packs                                 # opens the interactive menu
+
+  claude-packs v1.4.0  — interactive
+  Target ~/.claude (user)   (press t to change)
+
+ ❯ ◉ aws-connect          v1.3.0  ✓ installed
+       Amazon Connect contact center skills + agents
+
+  ↑/↓ move   space select   a all   enter info
+  i install   x uninstall   u update   t target   q quit
+```
+
+Navigate with the arrow keys (or `k`/`j`), multi-select with `space` (or `a` for all),
+then press `i`/`x`/`u` to install, uninstall, or update the selection — with nothing
+selected, the action applies to the highlighted row. Press `t` to switch between
+`~/.claude` (all projects) and a specific project's `.claude`, `enter` for details, and
+`q` to quit.
+
+Prefer one-shot commands? Every action has a non-interactive equivalent:
+
 ```bash
 claude-packs list                            # see available bundles
 claude-packs install aws-connect             # into ~/.claude (all projects)
@@ -80,6 +104,7 @@ default `~/.claude-packs`), `CLAUDE_PACKS_BIN` (launcher dir, default `~/.local/
 ## Command reference
 
 ```bash
+claude-packs tui                     interactive menu to browse + manage bundles
 claude-packs list                    list bundles + install status
 claude-packs info <bundle>           show a bundle's skills, agents, description
 claude-packs install <bundle...>     install one or more bundles
