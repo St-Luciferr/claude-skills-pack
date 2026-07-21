@@ -128,8 +128,21 @@ if [[ $ON_PATH -eq 0 ]]; then
   say "  then restart your shell (or run: export PATH=\"${BIN_DIR}:\$PATH\")"
 fi
 
+# --- interactive UI availability ------------------------------------------------
+# `claude-packs tui` upgrades itself to a rich GUI-feel UI (Textual) when Python
+# or uv can provide it; otherwise it uses the built-in pure-bash menu. Nothing is
+# installed here — this only tells the user which one they'll get.
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import textual' 2>/dev/null; then
+  UI_NOTE="rich (Python + Textual detected)"
+elif command -v uv >/dev/null 2>&1; then
+  UI_NOTE="rich (via uv — sets itself up on first run, then cached)"
+else
+  UI_NOTE="basic bash menu (install python3+Textual or uv to unlock the rich UI)"
+fi
+
 say
 say "Next steps:"
+say "  claude-packs                               # interactive UI: ${UI_NOTE}"
 say "  claude-packs list                          # see available bundles"
 say "  claude-packs install aws-connect           # into ~/.claude (all projects)"
 say "  claude-packs install aws-connect -p .      # into ./.claude (this project)"
