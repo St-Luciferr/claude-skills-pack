@@ -209,3 +209,7 @@ CONTRIBUTING.md            # how to add a new bundle
 See [CONTRIBUTING.md](CONTRIBUTING.md). In short: create `bundles/<name>/` with a
 `bundle.json`, drop your skills under `skills/` and agents under `agents/`, and the CLI
 picks it up automatically — no code changes needed.
+
+## License
+
+[MIT](LICENSE)

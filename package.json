@@ -11,6 +11,7 @@
     "bundles/",
     "VERSION"
   ],
+  "license": "MIT",
   "os": [
     "darwin",
     "linux"

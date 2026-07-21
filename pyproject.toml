@@ -7,6 +7,8 @@ name = "claude-packs"
 dynamic = ["version"]
 description = "Claude Code skill & agent bundles with an installer CLI and a rich interactive TUI"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 keywords = ["claude", "claude-code", "skills", "agents", "aws-connect", "tui"]
 classifiers = [
@@ -49,6 +51,7 @@ include = [
   "bundles",
   "VERSION",
   "README.md",
+  "LICENSE",
   "install.sh",
   "pyproject.toml",
 ]
