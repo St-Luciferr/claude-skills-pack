@@ -357,17 +357,23 @@ cmd_list() {
     nskills="$(manifest_array "$m" skills | grep -c . || true)"
     nagents="$(manifest_array "$m" agents | grep -c . || true)"
     ntotal=$(( nskills + nagents ))
-    ninst="$(receipt_item_count "$target" "$name")"
-    inst="$(receipt_version "$target" "$name")"
-    behind=''
-    [ -n "$inst" ] && [ "$inst" != "$ver" ] && behind="${DIM} (${inst} → ${ver} available)${RESET}"
-    if [ "$ninst" -eq 0 ]; then
-      badge="${DIM}not installed${RESET}"
-    elif [ "$ninst" -lt "$ntotal" ]; then
-      badge="${YELLOW}◑ partial${RESET}${DIM} (${ninst}/${ntotal} items)${RESET}${behind}"
-    else
-      badge="${GREEN}✓ installed${RESET}${behind}"
-    fi
+    # status per provider root (.claude / .github / .cursor)
+    badge=''; behind=''
+    local prov ptarget
+    for prov in $PROVIDERS_ALL; do
+      ptarget="$(provider_root "$target" "$prov")"
+      ninst="$(receipt_item_count "$ptarget" "$name")"
+      [ "$ninst" -gt 0 ] || continue
+      inst="$(receipt_version "$ptarget" "$name")"
+      [ -n "$inst" ] && [ "$inst" != "$ver" ] && behind="${DIM} (${inst} → ${ver} available)${RESET}"
+      [ -n "$badge" ] && badge="${badge}  "
+      if [ "$ninst" -lt "$ntotal" ]; then
+        badge="${badge}${YELLOW}◑ ${prov}${RESET}${DIM} ${ninst}/${ntotal}${RESET}"
+      else
+        badge="${badge}${GREEN}✓ ${prov}${RESET}"
+      fi
+    done
+    [ -n "$badge" ] && badge="${badge}${behind}" || badge="${DIM}not installed${RESET}"
     printf '  %s%s%s%s %sv%s%s  %s\n' "$BOLD" "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$badge"
     [ -n "$title" ] && printf '    %s\n' "$title"
     printf '%s    %s skills, %s agents%s' "$DIM" "$nskills" "$nagents" "$RESET"

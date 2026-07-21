@@ -68,29 +68,58 @@ class Bundle:
         return len(self.skills) + len(self.agents)
 
 
+PROVIDER_DIRS = {"claude": ".claude", "copilot": ".github", "cursor": ".cursor"}
+
+
 @dataclass
 class Target:
     mode: str = "user"          # "user" | "project"
     project_dir: str = "."
 
     @property
-    def path(self) -> Path:
+    def base(self) -> Path:
         if self.mode == "project":
-            return Path(self.project_dir).resolve() / ".claude"
-        return Path.home() / ".claude"
+            return Path(self.project_dir).resolve()
+        return Path.home()
+
+    @property
+    def path(self) -> Path:                     # the Claude Code root
+        return self.base / ".claude"
+
+    def root(self, provider: str) -> Path:      # any provider's root
+        return self.base / PROVIDER_DIRS[provider]
+
+    @property
+    def providers(self) -> List[str]:
+        # only Claude Code has a standard user-level location
+        return ["claude"] if self.mode == "user" else list(PROVIDER_DIRS)
 
     @property
     def pretty(self) -> str:
-        p = str(self.path)
+        if self.mode == "user":
+            return "~  (user — all projects, Claude Code)"
+        p = str(self.base)
         home = str(Path.home())
-        if p == home + "/.claude":
-            return "~/.claude  (user — all projects)"
         return p.replace(home, "~", 1) if p.startswith(home) else p
 
     def cli_flags(self) -> List[str]:
         if self.mode == "project":
             return ["--project", str(Path(self.project_dir).resolve())]
         return ["--user"]
+
+
+def installed_map(target: Target, bundle: str):
+    """-> {provider: (version, {(kind, item), ...})} for roots that track any."""
+    out = {}
+    for prov in target.providers:
+        ver, items = receipt_read(target.root(prov), bundle)
+        if items:
+            out[prov] = (ver, items)
+    return out
+
+
+def item_providers(imap, kind: str, name: str) -> List[str]:
+    return [p for p, (_, items) in imap.items() if (kind, name) in items]
 
 
 def load_bundles() -> List[Bundle]:
@@ -140,18 +169,28 @@ def receipt_read(target: Path, bundle: str) -> Tuple[str, Set[Tuple[str, str]]]:
     return version, items
 
 
-def status_text(b: Bundle, target: Path) -> Text:
-    inst_ver, items = receipt_read(target, b.name)
-    n = len(items)
+def status_text(b: Bundle, target: Target) -> Text:
+    """Per-provider status chips, e.g. '● claude  ◑ copilot 2/8'."""
+    imap = installed_map(target, b.name)
     t = Text()
-    if n == 0:
+    if not imap:
         t.append("○ not installed", style="dim")
-    elif n < b.total:
-        t.append(f"◑ partial ({n}/{b.total})", style="yellow")
-    else:
-        t.append("● installed", style="green")
-    if inst_ver and inst_ver != b.version:
-        t.append(f"  {inst_ver} → {b.version} available", style="dim italic")
+        return t
+    behind = ""
+    for prov, (ver, items) in imap.items():
+        if t.plain:
+            t.append("  ")
+        n = len(items)
+        if n >= b.total:
+            t.append("● ", style="green")
+            t.append(prov, style="green")
+        else:
+            t.append("◑ ", style="yellow")
+            t.append(f"{prov} {n}/{b.total}", style="yellow")
+        if ver and ver != b.version:
+            behind = f"  {ver} → {b.version} available"
+    if behind:
+        t.append(behind, style="dim italic")
     return t
 
 
@@ -208,7 +247,7 @@ class TargetPicker(ModalScreen[Optional[Tuple[Target, List[str]]]]):
                 yield Label("Install where?", classes="dialog-section")
             with RadioSet(id="target-choice"):
                 yield RadioButton(
-                    "User — ~/.claude  (available in every project)",
+                    "User — home config, every project  (Claude Code only)",
                     value=self.current.mode == "user",
                     id="opt-user",
                 )
@@ -357,7 +396,11 @@ class BundleScreen(Screen):
             head.append(f"  —  {b.title}")
         yield Static(head, id="topbar")
         yield Static("", id="targetbar")
-        yield SelectionList(id="items")
+        with VerticalScroll(id="items-wrap"):
+            yield Label("", classes="kind-head", id="skills-head")
+            yield SelectionList(id="skills", classes="items")
+            yield Label("", classes="kind-head", id="agents-head")
+            yield SelectionList(id="agents", classes="items")
         with Horizontal(id="actions"):
             yield Button("Install selected", variant="primary", id="install")
             yield Button("Uninstall selected", id="uninstall")
@@ -367,51 +410,65 @@ class BundleScreen(Screen):
 
     def on_mount(self) -> None:
         self.refresh_items(self.preselect_all)
-        self.query_one("#items", SelectionList).focus()
+        self.query_one("#skills", SelectionList).focus()
 
     @property
     def app_target(self) -> Target:
         return self.app.target  # type: ignore[attr-defined]
 
+    def _lists(self) -> List[SelectionList]:
+        return [self.query_one("#skills", SelectionList),
+                self.query_one("#agents", SelectionList)]
+
     def refresh_items(self, select_all: bool = False) -> None:
         b = self.bundle
-        _, installed = receipt_read(self.app_target.path, b.name)
-        sel = self.query_one("#items", SelectionList)
-        sel.clear_options()
-        for kind, icon, style, names in (
-            ("skill", "⚡", "yellow", b.skills),
-            ("agent", "◆", "magenta", b.agents),
+        imap = installed_map(self.app_target, b.name)
+        for kind, icon, style, names, lid in (
+            ("skill", "⚡", "yellow", b.skills, "skills"),
+            ("agent", "◆", "magenta", b.agents, "agents"),
         ):
+            head = Text()
+            head.append(f" {icon} ", style=style)
+            head.append(f"{kind.capitalize()}s", style="bold")
+            head.append(f"  ({len(names)})", style="dim")
+            self.query_one(f"#{lid}-head", Label).update(head)
+            sel = self.query_one(f"#{lid}", SelectionList)
+            sel.clear_options()
             for name in names:
                 label = Text()
-                label.append(f"{icon} ", style=style)
-                label.append(f"{name:<34}")
-                label.append(f" {kind} ", style=f"reverse dim {style}")
-                if (kind, name) in installed:
-                    label.append("  ● installed", style="green")
+                label.append(f"{name:<36}")
+                provs = item_providers(imap, kind, name)
+                for p in provs:
+                    label.append("  ● ", style="green")
+                    label.append(p, style="green dim")
                 sel.add_option((label, f"{kind}:{name}", select_all))
         self.query_one("#targetbar", Static).update(
             Text.assemble(
                 ("  target  ", "dim"),
                 (self.app_target.pretty, "bold"),
-                ("    click or space to tick · installed items show ●", "dim"),
+                ("    click or space to tick · ● marks where an item is installed", "dim"),
             )
         )
 
     def _picked(self) -> List[str]:
-        sel = self.query_one("#items", SelectionList)
-        picked = [str(v).split(":", 1)[1] for v in sel.selected]
-        if not picked and sel.highlighted is not None:
-            value = sel.get_option_at_index(sel.highlighted).value
-            picked = [str(value).split(":", 1)[1]]
+        picked = [str(v).split(":", 1)[1]
+                  for sel in self._lists() for v in sel.selected]
+        if not picked:
+            focused = self.focused
+            if isinstance(focused, SelectionList) and focused.highlighted is not None:
+                value = focused.get_option_at_index(focused.highlighted).value
+                picked = [str(value).split(":", 1)[1]]
         return picked
 
     def action_select_all(self) -> None:
-        sel = self.query_one("#items", SelectionList)
-        if len(sel.selected) == sel.option_count:
-            sel.deselect_all()
-        else:
-            sel.select_all()
+        lists = self._lists()
+        total = sum(s.option_count for s in lists)
+        ticked = sum(len(s.selected) for s in lists)
+        for s in lists:
+            if ticked == total:
+                s.deselect_all()
+            else:
+                s.select_all()
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -495,10 +552,12 @@ class BundleScreen(Screen):
 # --- main screen -----------------------------------------------------------------
 
 class BundleCard(ListItem):
-    def __init__(self, bundle: Bundle, target: Path) -> None:
-        n = len(receipt_read(target, bundle.name)[1])
-        status = "full" if (bundle.total and n >= bundle.total) else (
-            "partial" if n else "empty")
+    def __init__(self, bundle: Bundle, target: Target) -> None:
+        imap = installed_map(target, bundle.name)
+        counts = [len(items) for _, items in imap.values()]
+        best = max(counts) if counts else 0
+        status = "full" if (bundle.total and best >= bundle.total) else (
+            "partial" if best else "empty")
         super().__init__(
             Static(self.render_card(bundle, target)),
             classes=f"card st-{status}",
@@ -506,7 +565,7 @@ class BundleCard(ListItem):
         self.bundle = bundle
 
     @staticmethod
-    def render_card(b: Bundle, target: Path) -> Table:
+    def render_card(b: Bundle, target: Target) -> Table:
         grid = Table.grid(expand=True)
         grid.add_column(ratio=1)
         grid.add_column(justify="right")
@@ -569,14 +628,19 @@ class MainScreen(Screen):
         idx = lv.index or 0
         lv.clear()
         for b in load_bundles():
-            lv.append(BundleCard(b, self.app_target.path))
+            lv.append(BundleCard(b, self.app_target))
         if len(lv) > 0:
             lv.index = min(idx, len(lv) - 1)
+        provs = " · ".join(
+            label for key, label, _ in PROVIDERS
+            if key in self.app_target.providers
+        )
         self.query_one("#targetbar", Static).update(
             Text.assemble(
                 ("  target  ", "dim"),
                 (self.app_target.pretty, "bold"),
-                ("    press t or the Target… button to change", "dim"),
+                (f"    showing installs for {provs}", "dim"),
+                ("    (t to change)", "dim"),
             )
         )
 
@@ -661,14 +725,16 @@ class MainScreen(Screen):
         b = self.current()
         if not b:
             return
-        _, installed = receipt_read(self.app_target.path, b.name)
-        if not installed:
+        imap = installed_map(self.app_target, b.name)
+        if not imap:
             self.notify(f"{b.name} is not installed at {self.app_target.pretty}.",
                         severity="warning")
             return
+        total = sum(len(items) for _, items in imap.values())
+        where = ", ".join(imap)
         sure = await self.app.push_screen_wait(
             ConfirmDialog(
-                f"Uninstall {b.name} ({len(installed)} items) "
+                f"Uninstall {b.name} ({total} items across {where}) "
                 f"from {self.app_target.pretty}?",
                 yes_label="Uninstall",
             )
@@ -722,15 +788,26 @@ class PacksApp(App[None]):
         border-left: thick $accent;
         background: $primary 12%;
     }
-    #items {
+    #items-wrap {
         margin: 1 3;
         padding: 0 1;
         border: round $primary 35%;
         background: $surface;
         scrollbar-size-vertical: 1;
     }
-    #items:focus {
-        border: round $accent;
+    .kind-head {
+        margin: 1 0 0 0;
+        padding: 0 1;
+        width: 100%;
+        background: $panel;
+    }
+    SelectionList.items {
+        height: auto;
+        border: none;
+        padding: 0 1;
+        background: $surface;
+    }
+    SelectionList.items:focus {
         background-tint: $accent 4%;
     }
     #actions {

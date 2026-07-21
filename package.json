@@ -1,6 +1,6 @@
 {
   "name": "claude-skills-pack",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Claude Code skill & agent bundles with an installer CLI and a rich interactive TUI (command: claude-packs)",
   "bin": {
     "claude-packs": "npm/cli.js"
