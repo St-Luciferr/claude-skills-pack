@@ -56,13 +56,17 @@ claude-packs                                 # opens the interactive menu
 
 Navigate with the arrow keys (or `k`/`j`), multi-select with `space` (or `a` for all),
 then press `i`/`x`/`u` to install, uninstall, or update the selection — with nothing
-selected, the action applies to the highlighted row. Press `t` to switch between
-`~/.claude` (all projects) and a specific project's `.claude`, and `q` to quit.
+selected, the action applies to the highlighted row. Press `q` to quit.
 
 **Want just some of a bundle?** Press `enter` (or `→`) on a bundle to drill into its
 individual skills and agents, tick the ones you want with `space`, and press `i` to
 install (or `x` to remove) only those. Partly-installed bundles show `◑ partial (n/total)`
 in the list.
+
+**Choosing where it goes.** When you press `i` to install, the menu asks for a target —
+`~/.claude` (user, all projects), the **current directory**, or a **manual path** — so
+you pick the destination as part of each install. (`t` sets the target the list is shown
+against and the default for uninstall/update.)
 
 Prefer one-shot commands? Every action has a non-interactive equivalent:
 

@@ -850,6 +850,10 @@ tui_run_item_action() { # $1 = command function name
   items="${items#,}"
   [ -n "$items" ] || return 0
   BUNDLE_ARGS=("${CUR_BUNDLE}:${items}")
+  if [ "$fn" = cmd_install ]; then
+    tui_pick_target "Install selected items of ${CUR_BUNDLE} — where to?" \
+      || { TUI_MSG="${TUI_MSG:-${DIM}install cancelled${RESET}}"; return 0; }
+  fi
   if [ "$TUI_TARGET_MODE" = project ]; then OPT_PROJECT="$TUI_PROJECT_DIR"; else unset OPT_PROJECT 2>/dev/null || true; fi
   OPT_FORCE=0
   printf '\033[?25h\033[H\033[2J'
@@ -861,7 +865,8 @@ tui_run_item_action() { # $1 = command function name
 }
 
 # run cmd_install / cmd_uninstall / cmd_update over the selected bundles (or, if
-# none are selected, the one under the cursor), then reload status.
+# none are selected, the one under the cursor), then reload status. Installing
+# first asks where to put it; uninstall/update act on the current target.
 tui_run_action() { # $1 = command function name
   local fn="$1" i any=0
   BUNDLE_ARGS=()
@@ -869,6 +874,10 @@ tui_run_action() { # $1 = command function name
     if [ "${SEL[$i]}" = 1 ]; then BUNDLE_ARGS[${#BUNDLE_ARGS[@]}]="${NAMES[$i]}"; any=1; fi
   done
   [ "$any" = 1 ] || BUNDLE_ARGS=("${NAMES[$cursor]}")
+  if [ "$fn" = cmd_install ]; then
+    tui_pick_target "Install ${#BUNDLE_ARGS[@]} bundle(s) — where to?" \
+      || { TUI_MSG="${TUI_MSG:-${DIM}install cancelled${RESET}}"; return 0; }
+  fi
   if [ "$TUI_TARGET_MODE" = project ]; then OPT_PROJECT="$TUI_PROJECT_DIR"; else unset OPT_PROJECT 2>/dev/null || true; fi
   OPT_FORCE=0
   printf '\033[?25h\033[H\033[2J'
@@ -879,33 +888,50 @@ tui_run_action() { # $1 = command function name
   tui_load
 }
 
-tui_change_target() {
-  local ans dir
+# Ask where to act: user (~/.claude), the current directory, or a manual path.
+# On a choice, sets TUI_TARGET_MODE/TUI_PROJECT_DIR and returns 0. Returns 1 if
+# the user cancels (Enter, or an empty/invalid manual path) so callers can abort.
+# $1 = heading shown above the options.
+tui_pick_target() {
+  local heading="${1:-Choose target}" ans dir
   printf '\033[?25h\033[H\033[2J'
-  printf '\n  %sChoose install target%s\n\n' "$BOLD" "$RESET"
-  printf '    %s1%s  ~/.claude          %s(user — applies to all projects)%s\n' "$CYAN" "$RESET" "$DIM" "$RESET"
-  printf '    %s2%s  <dir>/.claude      %s(a single project)%s\n\n' "$CYAN" "$RESET" "$DIM" "$RESET"
-  printf '  Select [1/2] (Enter keeps current): '
-  IFS= read -r ans </dev/tty || { printf '\033[?25l'; return 0; }
+  printf '\n  %s%s%s\n\n' "$BOLD" "$heading" "$RESET"
+  printf '    %s1%s  ~/.claude                %s(user — all projects)%s\n' "$CYAN" "$RESET" "$DIM" "$RESET"
+  printf '    %s2%s  ./.claude                %s(current dir: %s)%s\n' "$CYAN" "$RESET" "$DIM" "$PWD" "$RESET"
+  printf '    %s3%s  %senter a path manually ...%s\n\n' "$CYAN" "$RESET" "$DIM" "$RESET"
+  printf '  Select [1/2/3] (Enter to cancel): '
+  IFS= read -r ans </dev/tty || { printf '\033[?25l'; return 1; }
   case "$ans" in
-    1) TUI_TARGET_MODE=user ;;
+    1)
+      TUI_TARGET_MODE=user
+      printf '\033[?25l'; return 0 ;;
     2)
-      printf '  Project directory [%s]: ' "$PWD"
+      TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$PWD"
+      printf '\033[?25l'; return 0 ;;
+    3)
+      printf '  Path to the project directory: '
       IFS= read -r dir </dev/tty || dir=''
-      [ -n "$dir" ] || dir="$PWD"
+      if [ -z "$dir" ]; then
+        TUI_MSG="${YELLOW}cancelled — no path entered${RESET}"; printf '\033[?25l'; return 1
+      fi
       case "$dir" in
         '~')   dir="$HOME" ;;
         '~/'*) dir="${HOME}/${dir#\~/}" ;;
       esac
       if [ -d "$dir" ]; then
-        TUI_TARGET_MODE=project
-        TUI_PROJECT_DIR="$(cd "$dir" && pwd)"
-      else
-        TUI_MSG="${RED}no such directory: ${dir}${RESET}"
+        TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$(cd "$dir" && pwd)"
+        printf '\033[?25l'; return 0
       fi
-      ;;
+      TUI_MSG="${RED}no such directory: ${dir}${RESET}"; printf '\033[?25l'; return 1 ;;
+    *)
+      printf '\033[?25l'; return 1 ;;
   esac
-  printf '\033[?25l'
+}
+
+# The `t` key: change the target the list is shown against (and the default for
+# uninstall/update). Cancelling leaves the current target unchanged.
+tui_change_target() {
+  tui_pick_target "Change target" || true
   tui_load
 }
 
@@ -983,11 +1009,14 @@ ${BOLD}claude-packs tui${RESET} — interactive full-screen menu
 Browse every bundle in one screen and install, uninstall, or update them without
 memorizing commands. Multi-select with space (or ${BOLD}a${RESET} for all), then act on the
 selection; with nothing selected, actions apply to the row under the cursor.
-Switch between installing to ~/.claude (user) and a project's .claude with ${BOLD}t${RESET}.
 
 Press ${BOLD}enter${RESET} (or →) on a bundle to drill into its individual skills and agents and
 pick exactly the ones you want — install or uninstall a subset instead of the whole
 bundle. Bundles you have only partly installed show ${YELLOW}◑ partial (n/total)${RESET}.
+
+When you install, you choose where it goes — ${BOLD}~/.claude${RESET} (user, all projects), the
+${BOLD}current directory${RESET}, or a ${BOLD}manual path${RESET}. The ${BOLD}t${RESET} key sets the target the list is shown
+against (and the default for uninstall/update).
 
 Running ${CYAN}claude-packs${RESET} with no command on a terminal opens this menu.
 
