@@ -29,7 +29,8 @@ command in `~/.local/bin` (the installer tells you if that's not on your `PATH`)
 **Requirements: bash and the usual coreutils — that's it.** No Node, no npm, no runtime
 to install. `git` is needed to install from a URL and to `self-update`. `jq` is used for
 manifest parsing when present, with an awk/sed fallback when it isn't. Works on bash 3.2,
-so stock macOS is fine.
+so stock macOS is fine. The interactive UI is nicest with `python3`+Textual or `uv` on
+the machine (see [Use it](#use-it)), but degrades gracefully to pure bash without them.
 
 Both forms above install the **published** repo, so you get a git-backed registry that
 `claude-packs self-update` can pull into. Contributors testing local changes should run
@@ -38,40 +39,46 @@ then unavailable, since there's no git remote behind it).
 
 ## Use it
 
-The quickest way in is the **interactive menu** — run `claude-packs` with no arguments
-(or `claude-packs tui`) and browse, select, and manage bundles from one screen:
+The quickest way in is the **interactive UI** — run `claude-packs` with no arguments
+(or `claude-packs tui`) for a genuinely GUI-feeling app in your terminal:
 
 ```tui
-claude-packs                                 # opens the interactive menu
+claude-packs                                 # opens the interactive UI
 
-  claude-packs v1.8.0  — interactive
-  Target ~/.claude (user)   (press t to change)
+  claude-packs  v1.9.0  skill & agent bundles for Claude Code
+  target  ~/.claude  (user — all projects)
 
- ❯ ◉ aws-connect          v1.3.0  ◑ partial (2/8)
-       Amazon Connect contact center skills + agents
+ ╭──────────────────────────────────────────────────────────╮
+ │  aws-connect  v1.3.0   ◑ partial (2/8)                   │
+ │  Amazon Connect contact center   4 skills · 4 agents     │
+ ╰──────────────────────────────────────────────────────────╯
 
-  ↑/↓ move   space/enter select   a all   → or click open & pick skills
-  i install   x uninstall   u update   t target   q quit
+     [ Open ] [ Install… ] [ Update ] [ Uninstall ] [ Target… ] [ Quit ]
 ```
 
-Drive it with the **keyboard or the mouse** — no numbers to type or paths to remember.
-Click a bundle to open it, click skills to tick them, click a button or target, and
-scroll to move; every action also has a key.
+Bundles are **clickable cards**; opening one shows its skills and agents as
+**checkboxes** with on-screen buttons. Installing pops a **target dialog** — pick
+`~/.claude` (user), the current project, or another folder. Actions confirm in
+**dialogs** and report in **toast notifications**; every control also has a key
+(shown in the footer), so keyboard-only use is first-class.
 
-**Installing is a guided, point-and-select flow:**
+**Installing is point-and-click:**
 
-1. Open a bundle — click it, or highlight it and press `→`. You'll see its skills and
-   agents.
-2. **Select** the ones you want: click a row, or move with `↑`/`↓` (or the scroll wheel)
-   and press `space`/`enter` (`a` = all). Pressing `i` on a bundle in the list opens the
-   same picker with **everything pre-ticked**, so untick a few or install the whole thing.
-3. Install with `i` or the on-screen **`[ Install ]`** button. A **target picker** appears —
-   arrow (or click) between `~/.claude` (user, all projects), the **current directory**, or
-   a **path you type in**.
+1. **Open** a bundle — click its card (or press `enter`).
+2. **Tick** the skills/agents you want — click rows or press `space` (`a` = all).
+   The `Install…` button / `i` key on the bundle list opens the same picker with
+   everything pre-ticked, for a whole-bundle install.
+3. Press **`Install selected`** and choose the target in the dialog. Done — a toast
+   reminds you to restart Claude Code.
 
-Partly-installed bundles show `◑ partial (n/total)` in the list. In the bundle list you
-can also multi-select several bundles with `space`/`enter` and press `i` to install them
-whole, `x` to uninstall, `u` to update; `t` sets the target the list is shown against.
+Partly-installed bundles show `◑ partial (n/total)` on their card; the `Target…`
+button switches which install target the statuses (and update/uninstall) apply to.
+
+The rich UI runs on Python + [Textual](https://textual.textualize.io/), auto-detected:
+it launches if `python3` has Textual **or** if [`uv`](https://docs.astral.sh/uv/) is
+installed (uv provisions it on first run, cached afterwards). No Python? No problem —
+the CLI falls back to its **built-in pure-bash menu** with the same flow (also
+reachable explicitly via `claude-packs tui --basic`).
 
 Prefer one-shot commands? Every action has a non-interactive equivalent:
 
@@ -125,7 +132,7 @@ default `~/.claude-packs`), `CLAUDE_PACKS_BIN` (launcher dir, default `~/.local/
 ## Command reference
 
 ```bash
-claude-packs tui                     interactive menu to browse + manage bundles
+claude-packs tui                     interactive UI (rich if Python/uv available; --basic for bash)
 claude-packs list                    list bundles + install status
 claude-packs info <bundle>           show a bundle's skills, agents, description
 claude-packs install <bundle[:item,...]>  install a bundle, or just specific skills/agents
@@ -148,7 +155,8 @@ installs are offered a re-run of the installer, which switches them to git-backe
 | `--user` / `-u` *(default)* | `~/.claude` | every project on this machine |
 | `--project [dir]` / `-p` | `<dir>/.claude` (default: cwd) | that one project |
 
-Other flags: `--force`/`-f` (overwrite without prompting), `--help`, `--version`.
+Other flags: `--force`/`-f` (overwrite without prompting), `--basic`/`-b` (tui: use the
+built-in bash menu instead of the rich UI), `--help`, `--version`.
 
 The CLI records installs in a `<target>/.claude/.claude-packs` receipt (a simple
 tab-separated `bundle / version / kind / item` file), so `uninstall` removes exactly the
@@ -173,6 +181,7 @@ registry (`~/.claude-packs/bundles/<name>/`) — only skills and agents are copi
 ```tree
 install.sh                 # installs the CLI onto a device (curl-able); --uninstall removes it
 bin/claude-packs           # the CLI — pure bash, no runtime dependencies
+bin/claude-packs-tui.py    # the rich interactive UI (Textual) — optional, auto-detected
 VERSION                    # CLI version
 bundles/
 └── aws-connect/

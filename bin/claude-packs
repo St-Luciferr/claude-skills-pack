@@ -1089,10 +1089,42 @@ tui_change_target() {
   tui_load
 }
 
+# Launch the rich (Textual/Python) UI when a runtime for it exists. Returns 0 if
+# it ran (however it exited), 1 if no runtime is available so the caller should
+# fall back to the built-in pure-bash TUI. `claude-packs tui --basic` (or
+# CLAUDE_PACKS_TUI=basic) skips the rich UI on purpose.
+launch_rich_tui() {
+  local script="${PKG_ROOT}/bin/claude-packs-tui.py" mode dir cli
+  [ -f "$script" ] || return 1
+  [ "${CLAUDE_PACKS_TUI:-}" = basic ] && return 1
+  [ "$OPT_BASIC" -eq 1 ] && return 1
+  if [ -n "${OPT_PROJECT+x}" ]; then mode=project; dir="${OPT_PROJECT:-$PWD}"; else mode=user; dir="$PWD"; fi
+  cli="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import textual' 2>/dev/null; then
+    CLAUDE_PACKS_ROOT="$PKG_ROOT" CLAUDE_PACKS_CLI="$cli" CLAUDE_PACKS_VERSION="$CLI_VERSION" \
+    CLAUDE_PACKS_TARGET_MODE="$mode" CLAUDE_PACKS_PROJECT_DIR="$dir" \
+      python3 "$script" && return 0
+    warn "the rich UI exited with an error — falling back to the basic menu."
+    return 1
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    # uv reads the script's inline metadata and provisions Textual itself
+    # (downloads once, then cached — subsequent launches are instant).
+    CLAUDE_PACKS_ROOT="$PKG_ROOT" CLAUDE_PACKS_CLI="$cli" CLAUDE_PACKS_VERSION="$CLI_VERSION" \
+    CLAUDE_PACKS_TARGET_MODE="$mode" CLAUDE_PACKS_PROJECT_DIR="$dir" \
+      uv run --quiet --script "$script" && return 0
+    warn "the rich UI could not start (uv run failed) — falling back to the basic menu."
+    return 1
+  fi
+  return 1
+}
+
 cmd_tui() {
   [ -e /dev/tty ] || die "the interactive menu needs a terminal (no /dev/tty available).
 Use the non-interactive commands instead, e.g. \"claude-packs list\"."
   [ -n "$(list_bundle_names)" ] || { say "No bundles found in ${BUNDLES_DIR}."; return 0; }
+
+  launch_rich_tui && return 0
 
   # honor an initial --project/--user flag as the starting target; `t` changes it later
   if [ -n "${OPT_PROJECT+x}" ]; then
@@ -1173,6 +1205,15 @@ help_for() { # $1=command -> detailed per-command help
     tui|ui|menu) cat <<EOF
 
 ${BOLD}claude-packs tui${RESET} — interactive full-screen menu
+
+Two implementations, picked automatically:
+
+  ${BOLD}rich UI${RESET}   a real windowed-feel interface (buttons, checkboxes, dialogs,
+            toasts, scrollbars, full mouse support). Used when Python with
+            ${CYAN}Textual${RESET} is available — or ${CYAN}uv${RESET}, which sets it up on first run.
+  ${BOLD}basic UI${RESET}  the built-in pure-bash menu — zero dependencies, same features.
+            Used as the fallback, or on request: ${CYAN}claude-packs tui --basic${RESET}
+            (or CLAUDE_PACKS_TUI=basic).
 
 Drive it with the keyboard or the mouse — no commands or paths to memorize.
 ${BOLD}Click${RESET} a bundle to open it, ${BOLD}click${RESET} skills to tick them, ${BOLD}click${RESET} a button or target, and
@@ -1372,6 +1413,7 @@ ${BOLD}Options${RESET}
   -u, --user                 install into ~/.claude  ${DIM}(default; all projects)${RESET}
   -p, --project [dir]        install into <dir>/.claude  ${DIM}(default dir: cwd)${RESET}
   -f, --force                overwrite without prompting
+  -b, --basic                tui: use the built-in bash menu, skip the rich UI
   -h, --help                 show this help
   -V, --version              print version
 
@@ -1392,6 +1434,7 @@ EOF
 # --- arg parsing ----------------------------------------------------------------
 OPT_FORCE=0
 OPT_HELP=0
+OPT_BASIC=0
 BUNDLE_ARGS=()
 COMMAND=''
 
@@ -1403,6 +1446,7 @@ while [ $# -gt 0 ]; do
       if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then OPT_PROJECT="$1"; shift; else OPT_PROJECT=""; fi
       ;;
     -f|--force) OPT_FORCE=1; shift ;;
+    -b|--basic) OPT_BASIC=1; shift ;;
     -h|--help) OPT_HELP=1; shift ;;
     -V|--version) printf '%s\n' "$CLI_VERSION"; exit 0 ;;
     -*) die "unknown option: $1 (see --help)" ;;
