@@ -1,12 +1,15 @@
 # claude-packs
 
-A central registry of **[Claude Code](https://claude.com/claude-code) skill & agent
-bundles** for different stacks and technologies, plus a small CLI to install the ones
-you want — into a single project or your user config.
+A central registry of **AI-assistant skill & agent bundles** for different stacks and
+technologies, plus a small CLI to install the ones you want — into a single project or
+your user config. Built for **[Claude Code](https://claude.com/claude-code)** first,
+and installable for **GitHub Copilot** and **Cursor** too.
 
 Each **bundle** groups the skills and subagents for one stack (e.g. Amazon Connect).
 The CLI copies a bundle's skills into `<target>/.claude/skills/` and its agents into
-`<target>/.claude/agents/`, tracks what it installed, and can cleanly remove it later.
+`<target>/.claude/agents/`, tracks what it installed, and can cleanly remove it later —
+and can emit the same content in each assistant's native format (see
+[Other assistants](#other-assistants-github-copilot--cursor)).
 
 ## Install the CLI
 
@@ -115,6 +118,32 @@ the exact item names.
 
 Skills and agents load at session start — **restart Claude Code** after installing.
 
+### Other assistants: GitHub Copilot & Cursor
+
+Bundles are authored in Claude Code format, and the CLI **translates them on install**
+for other assistants — pick providers with `--provider` (or tick them in the
+interactive UI's install dialog):
+
+```bash
+claude-packs install aws-connect --project . --provider copilot          # just Copilot
+claude-packs install aws-connect --project . --provider claude,copilot,cursor
+claude-packs uninstall aws-connect --project .   # removes it for every provider
+```
+
+What each provider gets (all project-scoped, inside your repo):
+
+| Provider | Skills become | Agents become |
+| --- | --- | --- |
+| `claude` *(default)* | `.claude/skills/<name>/` | `.claude/agents/<name>.md` |
+| `copilot` | `.github/prompts/<name>.prompt.md` (+ full skill dir in `.github/skills/`) | `.github/agents/<name>.md` |
+| `cursor` | `.cursor/commands/<name>.md` (+ full skill dir in `.cursor/skills/`) | `.cursor/rules/<name>.mdc` |
+
+Multi-file skills keep their reference files — the generated prompt/command entry
+points at the copied skill directory. Each provider root keeps its **own receipt**, so
+`update` refreshes and `uninstall` cleans every provider you installed for (narrow
+either with `--provider`). Copilot/Cursor installs are **project-only** — only Claude
+Code has a standard user-level location (`~/.claude`).
+
 ### Keeping up to date
 
 One command: **`claude-packs update`**. On a normal (git-backed) install it refreshes the
@@ -167,6 +196,10 @@ installs are offered a re-run of the installer, which switches them to git-backe
 | --- | --- | --- |
 | `--user` / `-u` *(default)* | `~/.claude` | every project on this machine |
 | `--project [dir]` / `-p` | `<dir>/.claude` (default: cwd) | that one project |
+
+`--provider <list>` / `-P` picks the AI assistants: `claude`, `copilot`, `cursor`
+(comma-separated). Install defaults to `claude`; uninstall/update/installed default to
+every provider they find installed.
 
 Other flags: `--force`/`-f` (overwrite without prompting), `--basic`/`-b` (tui: use the
 built-in bash menu instead of the rich UI), `--help`, `--version`.

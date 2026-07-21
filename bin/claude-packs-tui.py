@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from rich.table import Table
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -171,19 +172,40 @@ async def run_cli(*args: str) -> Tuple[int, str]:
 
 # --- modal dialogs ---------------------------------------------------------------
 
-class TargetPicker(ModalScreen[Optional[Target]]):
-    """'Where to?' dialog: user config, current project, or a custom path."""
+PROVIDERS = [
+    ("claude", "Claude Code", "skills + agents in .claude/"),
+    ("copilot", "GitHub Copilot", "prompts + agents in .github/"),
+    ("cursor", "Cursor", "commands + rules in .cursor/"),
+]
+
+
+class TargetPicker(ModalScreen[Optional[Tuple[Target, List[str]]]]):
+    """'Where to?' dialog: target folder — and, when installing, which
+    AI assistants (providers) to install the files for."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, heading: str, current: Target) -> None:
+    def __init__(self, heading: str, current: Target,
+                 ask_providers: bool = False) -> None:
         super().__init__()
         self.heading = heading
         self.current = current
+        self.ask_providers = ask_providers
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(self.heading, id="dialog-title")
+            if self.ask_providers:
+                yield Label("For which AI assistants?", classes="dialog-section")
+                yield SelectionList(
+                    *[
+                        (Text.assemble((label, "bold"), ("   " + hint, "dim")),
+                         key, key == "claude")
+                        for key, label, hint in PROVIDERS
+                    ],
+                    id="providers",
+                )
+                yield Label("Install where?", classes="dialog-section")
             with RadioSet(id="target-choice"):
                 yield RadioButton(
                     "User — ~/.claude  (available in every project)",
@@ -191,7 +213,7 @@ class TargetPicker(ModalScreen[Optional[Target]]):
                     id="opt-user",
                 )
                 yield RadioButton(
-                    f"This project — {Path.cwd()}/.claude",
+                    f"This project — {Path.cwd()}",
                     value=self.current.mode == "project",
                     id="opt-project",
                 )
@@ -229,13 +251,27 @@ class TargetPicker(ModalScreen[Optional[Target]]):
     def _confirm(self) -> None:
         choice = self.query_one("#target-choice", RadioSet).pressed_button
         err = self.query_one("#dialog-error", Label)
+        providers = ["claude"]
+        if self.ask_providers:
+            providers = [str(v) for v in
+                         self.query_one("#providers", SelectionList).selected]
+            if not providers:
+                err.update("tick at least one AI assistant")
+                return
         if choice is None:
             err.update("pick an option first")
             return
         if choice.id == "opt-user":
-            self.dismiss(Target("user"))
+            others = [p for p in providers if p != "claude"]
+            if others:
+                err.update(
+                    f"{', '.join(others)} installs are project-scoped — "
+                    "pick a project folder for them"
+                )
+                return
+            self.dismiss((Target("user"), providers))
         elif choice.id == "opt-project":
-            self.dismiss(Target("project", str(Path.cwd())))
+            self.dismiss((Target("project", str(Path.cwd())), providers))
         else:
             raw = self.query_one("#custom-path", Input).value.strip()
             if not raw:
@@ -245,7 +281,7 @@ class TargetPicker(ModalScreen[Optional[Target]]):
             if not path.is_dir():
                 err.update(f"no such folder: {path}")
                 return
-            self.dismiss(Target("project", str(path.resolve())))
+            self.dismiss((Target("project", str(path.resolve())), providers))
 
 
 class ConfirmDialog(ModalScreen[bool]):
@@ -342,11 +378,15 @@ class BundleScreen(Screen):
         _, installed = receipt_read(self.app_target.path, b.name)
         sel = self.query_one("#items", SelectionList)
         sel.clear_options()
-        for kind, names in (("skill", b.skills), ("agent", b.agents)):
+        for kind, icon, style, names in (
+            ("skill", "⚡", "yellow", b.skills),
+            ("agent", "◆", "magenta", b.agents),
+        ):
             for name in names:
                 label = Text()
+                label.append(f"{icon} ", style=style)
                 label.append(f"{name:<34}")
-                label.append(f" {kind} ", style="reverse dim")
+                label.append(f" {kind} ", style=f"reverse dim {style}")
                 if (kind, name) in installed:
                     label.append("  ● installed", style="green")
                 sel.add_option((label, f"{kind}:{name}", select_all))
@@ -403,19 +443,26 @@ class BundleScreen(Screen):
         if not items:
             self.notify("Nothing to install — tick some items first.", severity="warning")
             return
-        chosen = await self.app.push_screen_wait(
-            TargetPicker(f"Install {len(items)} item(s) of {self.bundle.name} — where to?",
-                         self.app_target)
+        result = await self.app.push_screen_wait(
+            TargetPicker(f"Install {len(items)} item(s) of {self.bundle.name}",
+                         self.app_target, ask_providers=True)
         )
-        if chosen is None:
+        if result is None:
             return
+        chosen, providers = result
         self.app.target = chosen  # type: ignore[attr-defined]
         spec = f"{self.bundle.name}:{','.join(items)}"
-        code, out = await run_cli("install", spec, *chosen.cli_flags(), "--force")
+        args = ["install", spec, *chosen.cli_flags(), "--force"]
+        if providers != ["claude"]:
+            args += ["--provider", ",".join(providers)]
+        code, out = await run_cli(*args)
         if code == 0:
+            names = ", ".join(
+                label for key, label, _ in PROVIDERS if key in providers
+            )
             self.notify(
-                f"Installed {len(items)} item(s) → {chosen.pretty}. "
-                "Restart Claude Code to load them.",
+                f"Installed {len(items)} item(s) for {names} → {chosen.pretty}. "
+                "Restart the assistant to load them.",
                 title="✓ installed",
             )
         else:
@@ -449,22 +496,34 @@ class BundleScreen(Screen):
 
 class BundleCard(ListItem):
     def __init__(self, bundle: Bundle, target: Path) -> None:
-        super().__init__(Static(self.render_card(bundle, target)))
+        n = len(receipt_read(target, bundle.name)[1])
+        status = "full" if (bundle.total and n >= bundle.total) else (
+            "partial" if n else "empty")
+        super().__init__(
+            Static(self.render_card(bundle, target)),
+            classes=f"card st-{status}",
+        )
         self.bundle = bundle
 
     @staticmethod
-    def render_card(b: Bundle, target: Path) -> Text:
+    def render_card(b: Bundle, target: Path) -> Table:
+        grid = Table.grid(expand=True)
+        grid.add_column(ratio=1)
+        grid.add_column(justify="right")
         line1 = Text()
-        line1.append(b.name, style="bold cyan")
-        line1.append(f"  v{b.version}", style="dim")
-        line1.append("   ")
-        line1.append_text(status_text(b, target))
+        line1.append(f" {b.name} ", style="bold reverse")
+        line1.append(f" v{b.version}", style="dim")
         line2 = Text()
         if b.title:
-            line2.append(b.title)
-            line2.append("   ")
-        line2.append(f"{len(b.skills)} skills · {len(b.agents)} agents", style="dim")
-        return Text.assemble(line1, "\n", line2)
+            line2.append(b.title, style="italic")
+            line2.append("\n")
+        line2.append("⚡ ", style="yellow")
+        line2.append(f"{len(b.skills)} skills", style="dim")
+        line2.append("   ◆ ", style="magenta")
+        line2.append(f"{len(b.agents)} agents", style="dim")
+        grid.add_row(line1, status_text(b, target))
+        grid.add_row(line2, Text())
+        return grid
 
 
 class MainScreen(Screen):
@@ -480,10 +539,11 @@ class MainScreen(Screen):
 
     def compose(self) -> ComposeResult:
         head = Text()
-        head.append(" claude-packs ", style="bold reverse")
+        head.append(" ⬢ claude-packs ", style="bold reverse")
         if VERSION:
-            head.append(f" v{VERSION}", style="dim")
-        head.append("  skill & agent bundles for Claude Code", style="dim")
+            head.append(f" v{VERSION} ", style="dim")
+        head.append("  skill & agent bundles — Claude Code · Copilot · Cursor",
+                    style="dim italic")
         yield Static(head, id="topbar")
         yield Static("", id="targetbar")
         yield ListView(id="bundles")
@@ -579,11 +639,11 @@ class MainScreen(Screen):
         self.app.exit()
 
     async def do_target(self) -> None:
-        chosen = await self.app.push_screen_wait(
+        result = await self.app.push_screen_wait(
             TargetPicker("Show and manage installs for which target?", self.app_target)
         )
-        if chosen is not None:
-            self.app.target = chosen  # type: ignore[attr-defined]
+        if result is not None:
+            self.app.target = result[0]  # type: ignore[attr-defined]
             self.refresh_bundles()
 
     async def do_update(self) -> None:
@@ -634,68 +694,103 @@ class PacksApp(App[None]):
         height: 1;
         padding: 0 1;
         background: $panel;
+        border-bottom: hkey $primary 40%;
     }
     #targetbar {
         dock: top;
         height: 1;
+        padding: 0 1;
         background: $surface;
-        color: $text;
+        color: $text-muted;
     }
     #bundles {
-        margin: 1 2;
+        margin: 1 3;
         background: $surface;
+        scrollbar-size-vertical: 1;
     }
-    #bundles > ListItem {
+    #bundles > ListItem.card {
         padding: 1 2;
         margin-bottom: 1;
         background: $panel;
-        border: round $primary 30%;
+        border: round $primary 35%;
+        border-left: thick $primary 35%;
     }
-    #bundles > ListItem.-highlight, #bundles > ListItem:hover {
+    #bundles > ListItem.card.st-full    { border-left: thick $success; }
+    #bundles > ListItem.card.st-partial { border-left: thick $warning; }
+    #bundles > ListItem.card.-highlight, #bundles > ListItem.card:hover {
         border: round $accent;
-        background: $primary 15%;
+        border-left: thick $accent;
+        background: $primary 12%;
     }
     #items {
-        margin: 1 2;
-        border: round $primary 30%;
+        margin: 1 3;
+        padding: 0 1;
+        border: round $primary 35%;
         background: $surface;
+        scrollbar-size-vertical: 1;
     }
     #items:focus {
         border: round $accent;
+        background-tint: $accent 4%;
     }
     #actions {
         dock: bottom;
         height: 3;
         align: center middle;
         background: $panel;
+        border-top: hkey $primary 40%;
     }
     #actions Button {
         margin: 0 1;
         min-width: 12;
+        border: none;
+        height: 1;
     }
     #dialog {
-        width: 70;
-        max-width: 90%;
+        width: 74;
+        max-width: 92%;
         height: auto;
-        max-height: 80%;
+        max-height: 85%;
         padding: 1 2;
         background: $panel;
-        border: thick $primary;
+        border: round $accent;
+        border-title-align: left;
     }
     #dialog.wide {
-        width: 90;
+        width: 96;
     }
     #dialog-title {
         margin-bottom: 1;
         text-style: bold;
+        color: $accent;
+    }
+    .dialog-section {
+        margin-top: 1;
+        color: $text-muted;
+        text-style: bold;
+    }
+    #providers {
+        height: auto;
+        max-height: 6;
+        margin: 0 0 0 1;
+        background: $panel;
+        border: none;
+        padding: 0;
+    }
+    #target-choice {
+        background: $panel;
+        border: none;
+        padding: 0 0 0 1;
     }
     #dialog-body {
         height: auto;
         max-height: 20;
         margin-bottom: 1;
+        background: $surface;
+        padding: 1;
     }
     #dialog-error {
-        color: $error;
+        color: $text-error;
         height: auto;
     }
     #dialog .buttons {
@@ -704,6 +799,10 @@ class PacksApp(App[None]):
     }
     #dialog Button {
         margin-left: 2;
+        min-width: 10;
+    }
+    #custom-path {
+        margin: 0 0 0 1;
     }
     #custom-path.hidden {
         display: none;
@@ -711,6 +810,10 @@ class PacksApp(App[None]):
     TargetPicker, ConfirmDialog, OutputDialog {
         align: center middle;
         background: $background 60%;
+    }
+    Toast {
+        background: $panel;
+        border-left: thick $success;
     }
     """
 
@@ -721,6 +824,10 @@ class PacksApp(App[None]):
         self.target = Target("project" if mode == "project" else "user", pdir)
 
     def on_mount(self) -> None:
+        try:
+            self.theme = "tokyo-night"
+        except Exception:
+            pass  # older Textual without this builtin theme — keep the default
         self.push_screen(MainScreen())
 
 

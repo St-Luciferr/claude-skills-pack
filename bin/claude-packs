@@ -217,6 +217,127 @@ pretty_target() {
   fi
 }
 
+# --- providers -------------------------------------------------------------------
+# Bundles are authored in Claude Code format. Other providers get the same skill
+# content plus a generated entry file in their native format:
+#   claude   <base>/.claude    skills/<n>/ + agents/<n>.md            (native)
+#   copilot  <base>/.github    skills/<n>/ + prompts/<n>.prompt.md + agents/<n>.md
+#   cursor   <base>/.cursor    skills/<n>/ + commands/<n>.md + rules/<n>.mdc
+# Each provider root keeps its own receipt, so track/uninstall/update work per
+# provider exactly like they always did for .claude.
+PROVIDERS_ALL='claude copilot cursor'
+
+provider_valid() { case "$1" in claude|copilot|cursor) return 0 ;; *) return 1 ;; esac }
+
+provider_label() {
+  case "$1" in
+    claude)  printf 'Claude Code\n' ;;
+    copilot) printf 'GitHub Copilot\n' ;;
+    cursor)  printf 'Cursor\n' ;;
+  esac
+}
+
+provider_root() { # $1=claude target (<base>/.claude) $2=provider -> that provider's root
+  case "$2" in
+    copilot) printf '%s/.github\n' "${1%/.claude}" ;;
+    cursor)  printf '%s/.cursor\n' "${1%/.claude}" ;;
+    *)       printf '%s\n' "$1" ;;
+  esac
+}
+
+# providers to act on: install defaults to claude; uninstall/update default to
+# every provider root that exists (so "remove the bundle" means everywhere).
+providers_for_install() { printf '%s\n' "${OPT_PROVIDER:-claude}" | tr ',' ' '; }
+providers_for_manage()  { printf '%s\n' "${OPT_PROVIDER:-claude,copilot,cursor}" | tr ',' ' '; }
+
+# frontmatter "description:" value — handles folded/literal blocks (">" / "|")
+fm_description() { # $1=markdown file
+  awk '
+    /^---[[:space:]]*$/ { fm++; next }
+    fm >= 2 { exit }
+    fm == 1 {
+      if (cap) {
+        if ($0 ~ /^[[:space:]]/) { sub(/^[[:space:]]+/, ""); buf = buf (buf == "" ? "" : " ") $0; next }
+        cap = 0
+      }
+      if ($0 ~ /^description:/) {
+        line = $0; sub(/^description:[[:space:]]*/, "", line)
+        if (line ~ /^[>|]/) cap = 1; else buf = line
+      }
+    }
+    END { print buf }
+  ' "$1"
+}
+
+fm_body() { # $1=markdown file -> content after the closing frontmatter ---
+  if head -n1 "$1" | grep -q '^---[[:space:]]*$'; then
+    awk 'fm >= 2 { print; next } /^---[[:space:]]*$/ { fm++ }' "$1"
+  else
+    cat "$1"
+  fi
+}
+
+install_skill_files() { # $1=provider $2=root $3=skill name $4=source dir
+  mkdir -p "$2/skills"
+  rm -rf "$2/skills/$3"
+  cp -R "$4" "$2/skills/$3"
+  case "$1" in
+    copilot)
+      mkdir -p "$2/prompts"
+      {
+        printf -- '---\ndescription: %s\n---\n\n' "$(fm_description "$4/SKILL.md")"
+        printf 'Follow the skill instructions in [SKILL.md](../skills/%s/SKILL.md).\n' "$3"
+        printf 'Treat that file'\''s directory (.github/skills/%s/) as the skill root for any\nrelative paths it references.\n' "$3"
+      } > "$2/prompts/$3.prompt.md"
+      ;;
+    cursor)
+      mkdir -p "$2/commands"
+      {
+        printf '# %s\n\n%s\n\n' "$3" "$(fm_description "$4/SKILL.md")"
+        printf 'Follow the skill instructions in `.cursor/skills/%s/SKILL.md`. Treat that\nfile'\''s directory as the skill root for any relative paths it references.\n' "$3"
+      } > "$2/commands/$3.md"
+      ;;
+  esac
+}
+
+install_agent_files() { # $1=provider $2=root $3=agent name $4=source file
+  case "$1" in
+    cursor)
+      mkdir -p "$2/rules"
+      {
+        printf -- '---\ndescription: %s\nalwaysApply: false\n---\n\n' "$(fm_description "$4")"
+        fm_body "$4"
+      } > "$2/rules/$3.mdc"
+      ;;
+    *)
+      mkdir -p "$2/agents"
+      cp "$4" "$2/agents/$3.md"
+      ;;
+  esac
+}
+
+remove_skill_files() { # $1=provider $2=root $3=skill name
+  rm -rf "$2/skills/$3"
+  case "$1" in
+    copilot) rm -f "$2/prompts/$3.prompt.md" ;;
+    cursor)  rm -f "$2/commands/$3.md" ;;
+  esac
+}
+
+remove_agent_files() { # $1=provider $2=root $3=agent name
+  case "$1" in
+    cursor) rm -f "$2/rules/$3.mdc" ;;
+    *)      rm -f "$2/agents/$3.md" ;;
+  esac
+}
+
+agent_dest() { # $1=provider $2=root $3=agent name -> the primary artifact path
+  case "$1" in
+    cursor) printf '%s/rules/%s.mdc\n' "$2" "$3" ;;
+    *)      printf '%s/agents/%s.md\n' "$2" "$3" ;;
+  esac
+}
+
 # --- commands -------------------------------------------------------------------
 cmd_list() {
   local names target
@@ -302,27 +423,30 @@ EOF
   printf '\n'
 }
 
-# $1=bundle name  $2=target  $3=filter (newline list of item names; empty = whole bundle)
+# $1=bundle name  $2=target (provider root)  $3=filter (newline list of item
+# names; empty = whole bundle)  $4=provider (default claude)
 #
 # Additive by design: only the items that pass the filter are (re)installed, and
 # each gets its receipt line upserted while any other tracked items are left in
 # place. This is what lets a user grow a selective install one skill at a time.
 install_one() {
-  local name="$1" target="$2" filter="${3-}" m ver bdir src dest s a old want
+  local name="$1" target="$2" filter="${3-}" prov="${4:-claude}" m ver bdir src dest s a old want
   local partial=0; [ -n "$filter" ] && partial=1
   m="$(bundle_manifest "$name")"
   ver="$(bundle_version "$m")"
   bdir="${BUNDLES_DIR}/${name}"
 
+  local forwhom=''
+  [ "$prov" != claude ] && forwhom=" for $(provider_label "$prov")"
   if [ "$partial" -eq 1 ]; then
-    printf '\n%sInstalling %s%s%s %sselected items%s%s v%s → %s%s\n' \
-      "$BOLD" "$CYAN" "$name" "$RESET" "$DIM" "$RESET" "$BOLD" "$ver" "$(pretty_target "$target")" "$RESET"
+    printf '\n%sInstalling %s%s%s %sselected items%s%s v%s → %s%s%s\n' \
+      "$BOLD" "$CYAN" "$name" "$RESET" "$DIM" "$RESET" "$BOLD" "$ver" "$(pretty_target "$target")" "$forwhom" "$RESET"
   else
-    printf '\n%sInstalling %s%s%s%s v%s → %s%s\n' \
-      "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$ver" "$(pretty_target "$target")" "$RESET"
+    printf '\n%sInstalling %s%s%s%s v%s → %s%s%s\n' \
+      "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$ver" "$(pretty_target "$target")" "$forwhom" "$RESET"
   fi
 
-  mkdir -p "${target}/skills" "${target}/agents"
+  mkdir -p "$target"
 
   # membership test against the filter — always true for a whole-bundle install
   in_filter() { [ "$partial" -eq 0 ] && return 0; printf '%s\n' "$filter" | grep -qxF -- "$1"; }
@@ -344,8 +468,7 @@ install_one() {
         printf '  %s- skipped skill %s%s\n' "$DIM" "$s" "$RESET"; continue
       fi
     fi
-    rm -rf "$dest"
-    cp -R "$src" "$dest"
+    install_skill_files "$prov" "$target" "$s" "$src"
     ok_skills="${ok_skills}${s}
 "
     printf '  %s+%s skill %s\n' "$GREEN" "$RESET" "$s"
@@ -359,14 +482,14 @@ EOF
     matched="${matched}${a}
 "
     src="${bdir}/agents/${a}.md"
-    dest="${target}/agents/${a}.md"
+    dest="$(agent_dest "$prov" "$target" "$a")"
     if [ ! -f "$src" ]; then warn "agent \"$a\" missing from bundle, skipping"; continue; fi
     if [ -e "$dest" ] && [ "$OPT_FORCE" -ne 1 ] && ! receipt_owns "$target" "$name" agent "$a"; then
       if ! confirm "  ${dest} exists and is not tracked by claude-packs. Overwrite?"; then
         printf '  %s- skipped agent %s%s\n' "$DIM" "$a" "$RESET"; continue
       fi
     fi
-    cp "$src" "$dest"
+    install_agent_files "$prov" "$target" "$a" "$src"
     ok_agents="${ok_agents}${a}
 "
     printf '  %s+%s agent %s\n' "$GREEN" "$RESET" "$a"
@@ -391,7 +514,7 @@ EOF
   while IFS= read -r old; do
     [ -n "$old" ] || continue
     if ! manifest_array "$m" skills | grep -qx "$old"; then
-      rm -rf "${target}/skills/${old}"
+      remove_skill_files "$prov" "$target" "$old"
       receipt_remove_item "$target" "$name" skill "$old"
       printf '  %s-%s skill %s %s(no longer in bundle)%s\n' "$RED" "$RESET" "$old" "$DIM" "$RESET"
     fi
@@ -401,7 +524,7 @@ EOF
   while IFS= read -r old; do
     [ -n "$old" ] || continue
     if ! manifest_array "$m" agents | grep -qx "$old"; then
-      rm -f "${target}/agents/${old}.md"
+      remove_agent_files "$prov" "$target" "$old"
       receipt_remove_item "$target" "$name" agent "$old"
       printf '  %s-%s agent %s %s(no longer in bundle)%s\n' "$RED" "$RESET" "$old" "$DIM" "$RESET"
     fi
@@ -444,93 +567,111 @@ EOF
 
 cmd_install() {
   [ "${#BUNDLE_ARGS[@]}" -gt 0 ] || \
-    die "usage: claude-packs install <bundle[:item,...]...> [--user | --project [dir]] [--force]"
-  local target arg
+    die "usage: claude-packs install <bundle[:item,...]...> [--user | --project [dir]] [--provider list] [--force]"
+  local target arg prov ptarget had_claude=0
   target="$(resolve_target)"
-  for arg in "${BUNDLE_ARGS[@]}"; do
-    parse_bundle_arg "$arg"
-    install_one "$PB_NAME" "$target" "$PB_FILTER"
+  for prov in $(providers_for_install); do
+    provider_valid "$prov" || die "unknown provider \"$prov\" (choose from: ${PROVIDERS_ALL// /, })"
+    if [ "$prov" != claude ] && [ -z "${OPT_PROJECT+x}" ]; then
+      die "$(provider_label "$prov") installs are project-scoped — add --project [dir].
+(Only Claude Code has a standard user-level location, ~/.claude.)"
+    fi
+    [ "$prov" = claude ] && had_claude=1
+    ptarget="$(provider_root "$target" "$prov")"
+    for arg in "${BUNDLE_ARGS[@]}"; do
+      parse_bundle_arg "$arg"
+      install_one "$PB_NAME" "$ptarget" "$PB_FILTER" "$prov"
+    done
   done
-  printf '\n%s✓ Done.%s Restart Claude Code — skills and agents load at session start.\n\n' \
-    "$GREEN" "$RESET"
+  if [ "$had_claude" -eq 1 ]; then
+    printf '\n%s✓ Done.%s Restart Claude Code — skills and agents load at session start.\n\n' \
+      "$GREEN" "$RESET"
+  else
+    printf '\n%s✓ Done.%s Reload your editor/assistant so it picks up the new files.\n\n' \
+      "$GREEN" "$RESET"
+  fi
 }
 
 cmd_uninstall() {
   [ "${#BUNDLE_ARGS[@]}" -gt 0 ] || \
-    die "usage: claude-packs uninstall <bundle[:item,...]...> [--user | --project [dir]]"
-  local target arg name p item changed=0 partial
+    die "usage: claude-packs uninstall <bundle[:item,...]...> [--user | --project [dir]] [--provider list]"
+  local target arg name p item changed=0 partial prov ptarget found
   target="$(resolve_target)"
   for arg in "${BUNDLE_ARGS[@]}"; do
     parse_bundle_arg "$arg"
     name="$PB_NAME"
-    if [ -z "$(receipt_version "$target" "$name")" ]; then
-      printf '  %s%s is not installed at %s%s\n' "$YELLOW" "$name" "$(pretty_target "$target")" "$RESET"
-      continue
-    fi
     partial=0; [ -n "$PB_FILTER" ] && partial=1
+    found=0
 
-    if [ "$partial" -eq 1 ]; then
-      # remove only the named items this bundle actually owns
-      printf '\n%sRemoving %sselected items%s from %s%s%s at %s%s\n' \
-        "$BOLD" "$DIM" "$RESET$BOLD" "$CYAN" "$name" "$RESET$BOLD" "$(pretty_target "$target")" "$RESET"
-      local removed
-      while IFS= read -r item; do
-        [ -n "$item" ] || continue
-        removed=0
-        if receipt_owns "$target" "$name" skill "$item"; then
-          rm -rf "${target}/skills/${item}"
-          receipt_remove_item "$target" "$name" skill "$item"
-          printf '  %s-%s skill %s\n' "$RED" "$RESET" "$item"; removed=1
-        fi
-        if receipt_owns "$target" "$name" agent "$item"; then
-          rm -f "${target}/agents/${item}.md"
-          receipt_remove_item "$target" "$name" agent "$item"
-          printf '  %s-%s agent %s\n' "$RED" "$RESET" "$item"; removed=1
-        fi
-        [ "$removed" -eq 1 ] || warn "\"$item\" is not an installed item of \"$name\" — skipped"
-      done <<EOF
+    # act on every provider root that tracks this bundle (or just --provider's)
+    for prov in $(providers_for_manage); do
+      provider_valid "$prov" || die "unknown provider \"$prov\" (choose from: ${PROVIDERS_ALL// /, })"
+      ptarget="$(provider_root "$target" "$prov")"
+      [ -n "$(receipt_version "$ptarget" "$name")" ] || continue
+      found=1
+
+      if [ "$partial" -eq 1 ]; then
+        # remove only the named items this bundle actually owns
+        printf '\n%sRemoving %sselected items%s from %s%s%s at %s%s\n' \
+          "$BOLD" "$DIM" "$RESET$BOLD" "$CYAN" "$name" "$RESET$BOLD" "$(pretty_target "$ptarget")" "$RESET"
+        local removed
+        while IFS= read -r item; do
+          [ -n "$item" ] || continue
+          removed=0
+          if receipt_owns "$ptarget" "$name" skill "$item"; then
+            remove_skill_files "$prov" "$ptarget" "$item"
+            receipt_remove_item "$ptarget" "$name" skill "$item"
+            printf '  %s-%s skill %s\n' "$RED" "$RESET" "$item"; removed=1
+          fi
+          if receipt_owns "$ptarget" "$name" agent "$item"; then
+            remove_agent_files "$prov" "$ptarget" "$item"
+            receipt_remove_item "$ptarget" "$name" agent "$item"
+            printf '  %s-%s agent %s\n' "$RED" "$RESET" "$item"; removed=1
+          fi
+          [ "$removed" -eq 1 ] || warn "\"$item\" is not an installed item of \"$name\" — skipped"
+        done <<EOF
 $PB_FILTER
 EOF
-      # if the last item is gone, drop the bundle entirely; otherwise it is now a selection
-      if [ "$(receipt_item_count "$target" "$name")" -eq 0 ]; then
-        receipt_drop "$target" "$name"
-      else
-        receipt_set_mode "$target" "$name" "$(receipt_version "$target" "$name")" select
+        # if the last item is gone, drop the bundle entirely; otherwise it is now a selection
+        if [ "$(receipt_item_count "$ptarget" "$name")" -eq 0 ]; then
+          receipt_drop "$ptarget" "$name"
+        else
+          receipt_set_mode "$ptarget" "$name" "$(receipt_version "$ptarget" "$name")" select
+        fi
+        changed=1
+        continue
       fi
-      changed=1
-      continue
-    fi
 
-    # whole-bundle removal
-    printf '\n%sRemoving %s%s%s%s from %s%s\n' \
-      "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$(pretty_target "$target")" "$RESET"
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      if [ -e "${target}/skills/${p}" ]; then
-        rm -rf "${target}/skills/${p}"
+      # whole-bundle removal
+      printf '\n%sRemoving %s%s%s%s from %s%s\n' \
+        "$BOLD" "$CYAN" "$name" "$RESET" "$BOLD" "$(pretty_target "$ptarget")" "$RESET"
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        remove_skill_files "$prov" "$ptarget" "$p"
         printf '  %s-%s skill %s\n' "$RED" "$RESET" "$p"
-      fi
-    done <<EOF
-$(receipt_items "$target" "$name" skill)
+      done <<EOF
+$(receipt_items "$ptarget" "$name" skill)
 EOF
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      if [ -e "${target}/agents/${p}.md" ]; then
-        rm -f "${target}/agents/${p}.md"
+      while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        remove_agent_files "$prov" "$ptarget" "$p"
         printf '  %s-%s agent %s\n' "$RED" "$RESET" "$p"
-      fi
-    done <<EOF
-$(receipt_items "$target" "$name" agent)
+      done <<EOF
+$(receipt_items "$ptarget" "$name" agent)
 EOF
-    receipt_drop "$target" "$name"
-    changed=1
+      receipt_drop "$ptarget" "$name"
+      changed=1
+    done
+
+    [ "$found" -eq 1 ] || printf '  %s%s is not installed at %s%s\n' \
+      "$YELLOW" "$name" "$(pretty_target "$target")" "$RESET"
   done
   [ "$changed" -eq 1 ] && printf '\n%s✓ Uninstalled.%s\n\n' "$GREEN" "$RESET"
   return 0
 }
 
 cmd_update() {
-  local target names arg
+  local target names arg prov ptarget any=0
   target="$(resolve_target)"
   if [ "${#BUNDLE_ARGS[@]}" -gt 0 ]; then
     # accept "bundle" or "bundle:item,..."; update always follows how the bundle
@@ -542,7 +683,10 @@ cmd_update() {
 "
     done
   else
-    names="$(receipt_bundles "$target")"
+    # everything installed at any provider root of this target
+    names="$(for prov in $(providers_for_manage); do
+               receipt_bundles "$(provider_root "$target" "$prov")"
+             done | sort -u)"
   fi
   if [ -z "$names" ]; then
     say "Nothing installed at $(pretty_target "$target")."
@@ -565,55 +709,69 @@ cmd_update() {
   local name prev cur mode filter
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    prev="$(receipt_version "$target" "$name")"
-    mode="$(receipt_mode "$target" "$name")"
-    if [ "$mode" = select ]; then
-      # refresh only the items this target tracks — never re-expand a selection to
-      # the whole bundle just because a newer version ships more
-      filter="$(printf '%s\n%s\n' \
-        "$(receipt_items "$target" "$name" skill)" \
-        "$(receipt_items "$target" "$name" agent)" | grep -v '^$' || true)"
-      install_one "$name" "$target" "$filter"
-    else
-      install_one "$name" "$target"
-    fi
-    cur="$(receipt_version "$target" "$name")"
-    if [ -n "$prev" ] && [ -n "$cur" ] && [ "$prev" != "$cur" ]; then
-      printf '  %s↑ %s v%s → v%s%s\n' "$GREEN" "$name" "$prev" "$cur" "$RESET"
-    fi
+    for prov in $(providers_for_manage); do
+      provider_valid "$prov" || die "unknown provider \"$prov\" (choose from: ${PROVIDERS_ALL// /, })"
+      ptarget="$(provider_root "$target" "$prov")"
+      prev="$(receipt_version "$ptarget" "$name")"
+      [ -n "$prev" ] || continue          # not installed for this provider
+      any=1
+      mode="$(receipt_mode "$ptarget" "$name")"
+      if [ "$mode" = select ]; then
+        # refresh only the items this target tracks — never re-expand a selection to
+        # the whole bundle just because a newer version ships more
+        filter="$(printf '%s\n%s\n' \
+          "$(receipt_items "$ptarget" "$name" skill)" \
+          "$(receipt_items "$ptarget" "$name" agent)" | grep -v '^$' || true)"
+        install_one "$name" "$ptarget" "$filter" "$prov"
+      else
+        install_one "$name" "$ptarget" '' "$prov"
+      fi
+      cur="$(receipt_version "$ptarget" "$name")"
+      if [ -n "$prev" ] && [ -n "$cur" ] && [ "$prev" != "$cur" ]; then
+        printf '  %s↑ %s v%s → v%s%s\n' "$GREEN" "$name" "$prev" "$cur" "$RESET"
+      fi
+    done
   done <<EOF
 $names
 EOF
+  [ "$any" -eq 1 ] || { say "Nothing installed at $(pretty_target "$target")."; return 0; }
   printf '\n%s✓ Done.%s Restart Claude Code — skills and agents load at session start.\n\n' \
     "$GREEN" "$RESET"
 }
 
 cmd_installed() {
-  local target names name ver ns na
+  local target names name ver ns na prov ptarget shown=0
   target="$(resolve_target)"
-  names="$(receipt_bundles "$target")"
-  if [ -z "$names" ]; then
-    say "No bundles installed at $(pretty_target "$target")."
-    return 0
-  fi
-  printf '\n%sInstalled at %s:%s\n\n' "$BOLD" "$(pretty_target "$target")" "$RESET"
   local sel
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    ver="$(receipt_version "$target" "$name")"
-    ns="$(receipt_items "$target" "$name" skill | grep -c . || true)"
-    na="$(receipt_items "$target" "$name" agent | grep -c . || true)"
-    if [ "$(receipt_mode "$target" "$name")" = select ]; then
-      sel="${YELLOW}  ◑ selection${RESET}"
-    else
-      sel=''
-    fi
-    printf '  %s%s%s %sv%s%s  %s(%s skills, %s agents)%s%s\n' \
-      "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$DIM" "$ns" "$na" "$RESET" "$sel"
-  done <<EOF
+  for prov in $(providers_for_manage); do
+    provider_valid "$prov" || die "unknown provider \"$prov\" (choose from: ${PROVIDERS_ALL// /, })"
+    ptarget="$(provider_root "$target" "$prov")"
+    names="$(receipt_bundles "$ptarget")"
+    [ -n "$names" ] || continue
+    shown=1
+    printf '\n%sInstalled at %s%s %s(%s)%s\n\n' \
+      "$BOLD" "$(pretty_target "$ptarget")" "$RESET" "$DIM" "$(provider_label "$prov")" "$RESET"
+    while IFS= read -r name; do
+      [ -n "$name" ] || continue
+      ver="$(receipt_version "$ptarget" "$name")"
+      ns="$(receipt_items "$ptarget" "$name" skill | grep -c . || true)"
+      na="$(receipt_items "$ptarget" "$name" agent | grep -c . || true)"
+      if [ "$(receipt_mode "$ptarget" "$name")" = select ]; then
+        sel="${YELLOW}  ◑ selection${RESET}"
+      else
+        sel=''
+      fi
+      printf '  %s%s%s %sv%s%s  %s(%s skills, %s agents)%s%s\n' \
+        "$CYAN" "$name" "$RESET" "$DIM" "$ver" "$RESET" "$DIM" "$ns" "$na" "$RESET" "$sel"
+    done <<EOF
 $names
 EOF
-  printf '\n'
+  done
+  if [ "$shown" -eq 0 ]; then
+    say "No bundles installed at $(pretty_target "$target")."
+  else
+    printf '\n'
+  fi
 }
 
 INSTALLER_URL="https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh"
@@ -1453,6 +1611,8 @@ ${BOLD}Commands${RESET}
 ${BOLD}Options${RESET}
   -u, --user                 install into ~/.claude  ${DIM}(default; all projects)${RESET}
   -p, --project [dir]        install into <dir>/.claude  ${DIM}(default dir: cwd)${RESET}
+  -P, --provider <list>      claude, copilot, cursor — comma-separated  ${DIM}(default:
+                             claude on install; every installed provider otherwise)${RESET}
   -f, --force                overwrite without prompting
   -b, --basic                tui: use the built-in bash menu, skip the rich UI
   -h, --help                 show this help
@@ -1476,6 +1636,7 @@ EOF
 OPT_FORCE=0
 OPT_HELP=0
 OPT_BASIC=0
+OPT_PROVIDER=''
 BUNDLE_ARGS=()
 COMMAND=''
 
@@ -1488,6 +1649,11 @@ while [ $# -gt 0 ]; do
       ;;
     -f|--force) OPT_FORCE=1; shift ;;
     -b|--basic) OPT_BASIC=1; shift ;;
+    -P|--provider|--for)
+      shift
+      [ $# -gt 0 ] && [ "${1#-}" = "$1" ] || die "--provider needs a value, e.g. --provider claude,copilot,cursor"
+      OPT_PROVIDER="$1"; shift
+      ;;
     -h|--help) OPT_HELP=1; shift ;;
     -V|--version) printf '%s\n' "$CLI_VERSION"; exit 0 ;;
     -*) die "unknown option: $1 (see --help)" ;;
