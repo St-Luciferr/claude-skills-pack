@@ -44,29 +44,31 @@ The quickest way in is the **interactive menu** — run `claude-packs` with no a
 ```tui
 claude-packs                                 # opens the interactive menu
 
-  claude-packs v1.5.0  — interactive
+  claude-packs v1.7.0  — interactive
   Target ~/.claude (user)   (press t to change)
 
  ❯ ◉ aws-connect          v1.3.0  ◑ partial (2/8)
        Amazon Connect contact center skills + agents
 
-  ↑/↓ move   space select   a all   enter/→ pick items
+  ↑/↓ move   space select   a all   enter/→ open & pick skills
   i install   x uninstall   u update   t target   q quit
 ```
 
-Navigate with the arrow keys (or `k`/`j`), multi-select with `space` (or `a` for all),
-then press `i`/`x`/`u` to install, uninstall, or update the selection — with nothing
-selected, the action applies to the highlighted row. Press `q` to quit.
+Everything is arrow-key driven — no numbers to type or paths to remember. Navigate with
+the arrow keys (or `k`/`j`) and press `q` to quit.
 
-**Want just some of a bundle?** Press `enter` (or `→`) on a bundle to drill into its
-individual skills and agents, tick the ones you want with `space`, and press `i` to
-install (or `x` to remove) only those. Partly-installed bundles show `◑ partial (n/total)`
-in the list.
+**Installing is a guided, point-and-select flow:**
 
-**Choosing where it goes.** When you press `i` to install, the menu asks for a target —
-`~/.claude` (user, all projects), the **current directory**, or a **manual path** — so
-you pick the destination as part of each install. (`t` sets the target the list is shown
-against and the default for uninstall/update.)
+1. Press `enter` (or `→`) on a bundle to open its skills and agents. Tick the ones you
+   want with `space` (`a` = all), or press `i` on the bundle to open the same picker with
+   **everything pre-ticked** — then untick a few, or install the whole thing.
+2. Press `enter` (or `i`) to install the ticked items. A **target picker** appears —
+   arrow between `~/.claude` (user, all projects), the **current directory**, or a
+   **path you type in**, and press `enter`.
+
+Partly-installed bundles show `◑ partial (n/total)` in the list. In the bundle list you
+can also multi-select several bundles with `space` and press `i` to install them whole,
+`x` to uninstall, `u` to update; `t` sets the target the list is shown against.
 
 Prefer one-shot commands? Every action has a non-interactive equivalent:
 

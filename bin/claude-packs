@@ -726,9 +726,14 @@ tui_load() {
 }
 
 # load the individual skills/agents of $CUR_BUNDLE into the item-view arrays.
+# $1 = initial selection: "all" ticks every item (install-everything default),
+# anything else leaves them unticked. Reloading after an action preserves nothing
+# on purpose — the freshly-read install status is what the checkboxes reset to.
 tui_load_items() {
+  local presel="${1:-none}"
   IKIND=(); INAME=(); IINST=(); ISEL=()
-  local target m s a
+  local target m s a init=0
+  [ "$presel" = all ] && init=1
   target="$(tui_target)"
   m="${BUNDLES_DIR}/${CUR_BUNDLE}/bundle.json"
   while IFS= read -r s; do
@@ -736,7 +741,7 @@ tui_load_items() {
     IKIND[${#IKIND[@]}]=skill
     INAME[${#INAME[@]}]="$s"
     if receipt_owns "$target" "$CUR_BUNDLE" skill "$s"; then IINST[${#IINST[@]}]=1; else IINST[${#IINST[@]}]=0; fi
-    ISEL[${#ISEL[@]}]=0
+    ISEL[${#ISEL[@]}]=$init
   done <<EOF
 $(manifest_array "$m" skills)
 EOF
@@ -745,7 +750,7 @@ EOF
     IKIND[${#IKIND[@]}]=agent
     INAME[${#INAME[@]}]="$a"
     if receipt_owns "$target" "$CUR_BUNDLE" agent "$a"; then IINST[${#IINST[@]}]=1; else IINST[${#IINST[@]}]=0; fi
-    ISEL[${#ISEL[@]}]=0
+    ISEL[${#ISEL[@]}]=$init
   done <<EOF
 $(manifest_array "$m" agents)
 EOF
@@ -783,7 +788,7 @@ tui_draw() {
     [ -n "${TITLES[$i]}" ] && printf '       %s%s%s\n' "$DIM" "${TITLES[$i]}" "$RESET"
   done
 
-  printf '\n  %s↑/↓%s move   %sspace%s select   %sa%s all   %senter/→%s pick items\n' \
+  printf '\n  %s↑/↓%s move   %sspace%s select   %sa%s all   %senter/→%s open & pick skills\n' \
     "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
   printf '  %si%s install   %sx%s uninstall   %su%s update   %st%s target   %sq%s quit\n' \
     "$GREEN" "$RESET" "$RED" "$RESET" "$CYAN" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
@@ -793,13 +798,15 @@ tui_draw() {
 
 # item drill-in view: the individual skills and agents of $CUR_BUNDLE
 tui_draw_items() {
-  local target ptarget i rowcur marker prevkind='' name inst tag
+  local target ptarget i rowcur marker prevkind='' name inst tag nsel=0
   target="$(tui_target)"; ptarget="$(pretty_target "$target")"
+  for i in "${!INAME[@]}"; do [ "${ISEL[$i]}" = 1 ] && nsel=$((nsel + 1)); done
   printf '\033[H\033[2J'
   printf '  %s%sclaude-packs%s %sv%s%s  %s— %s%s\n' \
     "$BOLD" "$CYAN" "$RESET" "$DIM" "$CLI_VERSION" "$RESET" "$BOLD" "$CUR_BUNDLE" "$RESET"
   printf '  %sTarget%s %s\n' "$DIM" "$RESET" "$ptarget"
-  printf '  %sPick individual skills and agents to install or remove%s\n' "$DIM" "$RESET"
+  printf '  %sTick the skills and agents you want, then%s %senter%s%s to install%s   %s(%d selected)%s\n' \
+    "$DIM" "$RESET" "$BOLD" "$RESET" "$DIM" "$RESET" "$DIM" "$nsel" "$RESET"
 
   for i in "${!INAME[@]}"; do
     if [ "${IKIND[$i]}" != "$prevkind" ]; then
@@ -814,10 +821,17 @@ tui_draw_items() {
     printf ' %s %s %s%-30s%s %s\n' "$rowcur" "$marker" "$CYAN" "$name" "$RESET" "$tag"
   done
 
-  printf '\n  %s↑/↓%s move   %sspace%s select   %sa%s all   %si%s install   %sx%s uninstall   %s←%s back\n' \
+  printf '\n  %s↑/↓%s move   %sspace%s select   %sa%s all   %senter/i%s install   %sx%s uninstall   %s←%s back\n' \
     "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET" "$GREEN" "$RESET" "$RED" "$RESET" "$BOLD" "$RESET"
   [ -n "$TUI_MSG" ] && printf '\n  %s\n' "$TUI_MSG"
   return 0
+}
+
+# true if at least one bundle in the list is checkbox-selected
+tui_any_selected() {
+  local i
+  for i in "${!NAMES[@]}"; do [ "${SEL[$i]}" = 1 ] && return 0; done
+  return 1
 }
 
 # select-all / clear-all toggle
@@ -888,44 +902,68 @@ tui_run_action() { # $1 = command function name
   tui_load
 }
 
-# Ask where to act: user (~/.claude), the current directory, or a manual path.
-# On a choice, sets TUI_TARGET_MODE/TUI_PROJECT_DIR and returns 0. Returns 1 if
-# the user cancels (Enter, or an empty/invalid manual path) so callers can abort.
-# $1 = heading shown above the options.
+# Prompt for a directory path (the only unavoidably-typed field). Sets $PATH_INPUT.
+tui_read_path() {
+  PATH_INPUT=''
+  printf '\033[H\033[2J\n  %sEnter a project directory%s  %s(the bundle installs into <path>/.claude — ~ is allowed)%s\n\n' \
+    "$BOLD" "$RESET" "$DIM" "$RESET"
+  printf '  %s›%s ' "$CYAN" "$RESET"
+  printf '\033[?25h'
+  IFS= read -r PATH_INPUT </dev/tty || PATH_INPUT=''
+  printf '\033[?25l'
+}
+
+# Arrow-key target picker: user (~/.claude), the current directory, or a manual
+# path. Sets TUI_TARGET_MODE/TUI_PROJECT_DIR and returns 0 on a choice; returns 1
+# if the user cancels (q/esc). $1 = heading shown above the options.
 tui_pick_target() {
-  local heading="${1:-Choose target}" ans dir
-  printf '\033[?25h\033[H\033[2J'
-  printf '\n  %s%s%s\n\n' "$BOLD" "$heading" "$RESET"
-  printf '    %s1%s  ~/.claude                %s(user — all projects)%s\n' "$CYAN" "$RESET" "$DIM" "$RESET"
-  printf '    %s2%s  ./.claude                %s(current dir: %s)%s\n' "$CYAN" "$RESET" "$DIM" "$PWD" "$RESET"
-  printf '    %s3%s  %senter a path manually ...%s\n\n' "$CYAN" "$RESET" "$DIM" "$RESET"
-  printf '  Select [1/2/3] (Enter to cancel): '
-  IFS= read -r ans </dev/tty || { printf '\033[?25l'; return 1; }
-  case "$ans" in
-    1)
-      TUI_TARGET_MODE=user
-      printf '\033[?25l'; return 0 ;;
-    2)
-      TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$PWD"
-      printf '\033[?25l'; return 0 ;;
-    3)
-      printf '  Path to the project directory: '
-      IFS= read -r dir </dev/tty || dir=''
-      if [ -z "$dir" ]; then
-        TUI_MSG="${YELLOW}cancelled — no path entered${RESET}"; printf '\033[?25l'; return 1
-      fi
-      case "$dir" in
-        '~')   dir="$HOME" ;;
-        '~/'*) dir="${HOME}/${dir#\~/}" ;;
+  local heading="${1:-Choose target}" sel nopts=3 perr='' i dir
+  [ "$TUI_TARGET_MODE" = user ] && sel=0 || sel=1
+  while :; do
+    printf '\033[H\033[2J'
+    printf '\n  %s%s%s\n\n' "$BOLD" "$heading" "$RESET"
+    for i in 0 1 2; do
+      local cur='  ' lbl desc
+      case "$i" in
+        0) lbl='~/.claude'              ; desc='user — all projects' ;;
+        1) lbl='./.claude'              ; desc="current dir: $PWD" ;;
+        2) lbl='Enter a path manually…' ; desc='' ;;
       esac
-      if [ -d "$dir" ]; then
-        TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$(cd "$dir" && pwd)"
-        printf '\033[?25l'; return 0
+      if [ "$sel" -eq "$i" ]; then
+        printf '  %s❯%s %s%s%-24s%s  %s%s%s\n' "$CYAN" "$RESET" "$BOLD" "$CYAN" "$lbl" "$RESET" "$DIM" "$desc" "$RESET"
+      else
+        printf '    %-24s  %s%s%s\n' "$lbl" "$DIM" "$desc" "$RESET"
       fi
-      TUI_MSG="${RED}no such directory: ${dir}${RESET}"; printf '\033[?25l'; return 1 ;;
-    *)
-      printf '\033[?25l'; return 1 ;;
-  esac
+    done
+    printf '\n  %s↑/↓%s move   %senter%s choose   %sesc/q%s cancel\n' \
+      "$BOLD" "$RESET" "$BOLD" "$RESET" "$BOLD" "$RESET"
+    [ -n "$perr" ] && printf '\n  %s\n' "$perr"
+    read_key || return 1
+    perr=''
+    case "$KEY" in
+      k|$'\033[A') sel=$(( (sel + nopts - 1) % nopts )) ;;
+      j|$'\033[B') sel=$(( (sel + 1) % nopts )) ;;
+      q|Q|$'\033') return 1 ;;
+      ''|$'\r'|$'\n')
+        case "$sel" in
+          0) TUI_TARGET_MODE=user; return 0 ;;
+          1) TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$PWD"; return 0 ;;
+          2)
+            tui_read_path; dir="$PATH_INPUT"
+            [ -n "$dir" ] || { perr="${YELLOW}no path entered — try again or press q${RESET}"; continue; }
+            case "$dir" in
+              '~')   dir="$HOME" ;;
+              '~/'*) dir="${HOME}/${dir#\~/}" ;;
+            esac
+            if [ -d "$dir" ]; then
+              TUI_TARGET_MODE=project; TUI_PROJECT_DIR="$(cd "$dir" && pwd)"; return 0
+            fi
+            perr="${RED}no such directory: ${dir}${RESET}"
+            ;;
+        esac
+        ;;
+    esac
+  done
 }
 
 # The `t` key: change the target the list is shown against (and the default for
@@ -973,7 +1011,7 @@ Use the non-interactive commands instead, e.g. \"claude-packs list\"."
         j|$'\033[B') if [ "$icursor" -lt $((n - 1)) ]; then icursor=$((icursor + 1)); else icursor=0; fi ;;
         ' ') if [ "${ISEL[$icursor]}" = 1 ]; then ISEL[$icursor]=0; else ISEL[$icursor]=1; fi ;;
         a|A) tui_toggle_all_items ;;
-        i|I) tui_run_item_action cmd_install ;;
+        i|I|''|$'\r'|$'\n') tui_run_item_action cmd_install ;;
         x|X|d|D) tui_run_item_action cmd_uninstall ;;
         h|$'\033[D'|q|Q|$'\033') VIEW=bundles; tui_load ;;
       esac
@@ -984,13 +1022,21 @@ Use the non-interactive commands instead, e.g. \"claude-packs list\"."
         j|$'\033[B') if [ "$cursor" -lt $((n - 1)) ]; then cursor=$((cursor + 1)); else cursor=0; fi ;;
         ' ') if [ "${SEL[$cursor]}" = 1 ]; then SEL[$cursor]=0; else SEL[$cursor]=1; fi ;;
         a|A) tui_toggle_all ;;
-        i|I) tui_run_action cmd_install ;;
+        i|I)
+          # multiple bundles ticked → install them whole; otherwise open the
+          # skill picker for the bundle under the cursor (all pre-ticked)
+          if tui_any_selected; then
+            tui_run_action cmd_install
+          else
+            CUR_BUNDLE="${NAMES[$cursor]}"; icursor=0; VIEW=items; tui_load_items all
+          fi
+          ;;
         x|X|d|D) tui_run_action cmd_uninstall ;;
         u|U) tui_run_action cmd_update ;;
         t|T) tui_change_target ;;
         r|R) tui_load; TUI_MSG="${DIM}refreshed${RESET}" ;;
         l|$'\033[C'|''|$'\r'|$'\n')
-          CUR_BUNDLE="${NAMES[$cursor]}"; icursor=0; VIEW=items; tui_load_items ;;
+          CUR_BUNDLE="${NAMES[$cursor]}"; icursor=0; VIEW=items; tui_load_items none ;;
         q|Q|$'\033') break ;;
       esac
     fi
@@ -1006,29 +1052,34 @@ help_for() { # $1=command -> detailed per-command help
 
 ${BOLD}claude-packs tui${RESET} — interactive full-screen menu
 
-Browse every bundle in one screen and install, uninstall, or update them without
-memorizing commands. Multi-select with space (or ${BOLD}a${RESET} for all), then act on the
-selection; with nothing selected, actions apply to the row under the cursor.
+Everything is arrow-key driven — no commands or paths to memorize. In the bundle
+list, move with ↑/↓, and:
 
-Press ${BOLD}enter${RESET} (or →) on a bundle to drill into its individual skills and agents and
-pick exactly the ones you want — install or uninstall a subset instead of the whole
-bundle. Bundles you have only partly installed show ${YELLOW}◑ partial (n/total)${RESET}.
+  • ${BOLD}enter${RESET} (or →) opens a bundle's skills and agents so you can pick exactly what to
+    install — tick items with space (${BOLD}a${RESET} = all), then ${BOLD}enter${RESET} to install the ticked ones.
+  • ${BOLD}i${RESET} on a bundle jumps straight into that skill picker with everything pre-ticked,
+    so you can install the whole bundle or untick a few first.
+  • select several bundles with space and press ${BOLD}i${RESET} to install them whole.
 
-When you install, you choose where it goes — ${BOLD}~/.claude${RESET} (user, all projects), the
-${BOLD}current directory${RESET}, or a ${BOLD}manual path${RESET}. The ${BOLD}t${RESET} key sets the target the list is shown
-against (and the default for uninstall/update).
+Every install ends with a ${BOLD}target picker${RESET} — an arrow-key choice between ${BOLD}~/.claude${RESET}
+(user, all projects), the ${BOLD}current directory${RESET}, or a ${BOLD}path you type in${RESET}. The ${BOLD}t${RESET} key sets
+the target the list is shown against (and the default for uninstall/update).
+Bundles you have only partly installed show ${YELLOW}◑ partial (n/total)${RESET}.
 
 Running ${CYAN}claude-packs${RESET} with no command on a terminal opens this menu.
 
 ${BOLD}Bundle list${RESET}
-  ↑/↓ or k/j   move          space   select/deselect      a   select all / none
-  i            install       x       uninstall            u   update
-  enter or →   pick items    t       change target        r   refresh
+  ↑/↓ or k/j   move             space   select/deselect     a   select all / none
+  i            install          x       uninstall           u   update
+  enter or →   open & pick      t       change target       r   refresh
   q or ESC     quit
 
-${BOLD}Item view${RESET} (inside a bundle)
-  ↑/↓ or k/j   move          space   select/deselect      a   select all / none
-  i            install       x       uninstall            ← or q   back
+${BOLD}Skill picker${RESET} (inside a bundle)
+  ↑/↓ or k/j   move             space   select/deselect     a   select all / none
+  enter or i   install ticked   x       uninstall ticked    ← or q   back
+
+${BOLD}Target picker${RESET} (shown when you install)
+  ↑/↓ move     enter choose     esc or q   cancel
 
 ${BOLD}Usage${RESET}
   claude-packs tui
