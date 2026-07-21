@@ -338,6 +338,18 @@ agent_dest() { # $1=provider $2=root $3=agent name -> the primary artifact path
   esac
 }
 
+# Does <dir> look like a project we've installed into? (any provider root with a
+# receipt that tracks at least one real line) — used to pick the TUI's initial
+# target: launching inside such a project should show THAT project's installs.
+project_has_receipts() { # $1=dir
+  local d
+  for d in .claude .github .cursor; do
+    [ -f "$1/$d/${RECEIPT}" ] || continue
+    awk -F'\t' '!/^#/ && NF { found = 1 } END { exit !found }' "$1/$d/${RECEIPT}" && return 0
+  done
+  return 1
+}
+
 # --- commands -------------------------------------------------------------------
 cmd_list() {
   local names target
@@ -1300,7 +1312,13 @@ launch_rich_tui() {
   [ -f "$script" ] || return 1
   [ "${CLAUDE_PACKS_TUI:-}" = basic ] && return 1
   [ "$OPT_BASIC" -eq 1 ] && return 1
-  if [ -n "${OPT_PROJECT+x}" ]; then mode=project; dir="${OPT_PROJECT:-$PWD}"; else mode=user; dir="$PWD"; fi
+  if [ -n "${OPT_PROJECT+x}" ]; then
+    mode=project; dir="${OPT_PROJECT:-$PWD}"
+  elif [ "$OPT_USER" -eq 0 ] && project_has_receipts "$PWD"; then
+    mode=project; dir="$PWD"     # launched inside a managed project — show it
+  else
+    mode=user; dir="$PWD"
+  fi
   cli="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
   # A PyPI install exports CLAUDE_PACKS_PYTHON (its venv ships Textual); otherwise
   # probe the system python3.
@@ -1331,11 +1349,15 @@ Use the non-interactive commands instead, e.g. \"claude-packs list\"."
 
   launch_rich_tui && return 0
 
-  # honor an initial --project/--user flag as the starting target; `t` changes it later
+  # honor an initial --project/--user flag as the starting target; `t` changes it
+  # later. With no flag, prefer the current dir when it's a managed project.
   if [ -n "${OPT_PROJECT+x}" ]; then
     TUI_TARGET_MODE=project
     TUI_PROJECT_DIR="${OPT_PROJECT:-$PWD}"
     [ -d "$TUI_PROJECT_DIR" ] || TUI_PROJECT_DIR="$PWD"
+  elif [ "$OPT_USER" -eq 0 ] && project_has_receipts "$PWD"; then
+    TUI_TARGET_MODE=project
+    TUI_PROJECT_DIR="$PWD"
   else
     TUI_TARGET_MODE=user
     TUI_PROJECT_DIR="$PWD"
@@ -1642,13 +1664,14 @@ EOF
 OPT_FORCE=0
 OPT_HELP=0
 OPT_BASIC=0
+OPT_USER=0
 OPT_PROVIDER=''
 BUNDLE_ARGS=()
 COMMAND=''
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    -u|--user) unset OPT_PROJECT 2>/dev/null || true; shift ;;
+    -u|--user) unset OPT_PROJECT 2>/dev/null || true; OPT_USER=1; shift ;;
     -p|--project)
       shift
       if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then OPT_PROJECT="$1"; shift; else OPT_PROJECT=""; fi

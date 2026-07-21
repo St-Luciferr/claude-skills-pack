@@ -896,8 +896,15 @@ class PacksApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        mode = os.environ.get("CLAUDE_PACKS_TARGET_MODE", "user")
+        mode = os.environ.get("CLAUDE_PACKS_TARGET_MODE")
         pdir = os.environ.get("CLAUDE_PACKS_PROJECT_DIR", str(Path.cwd()))
+        if mode is None:
+            # dev run without the launcher: prefer the cwd when it's a managed project
+            has = any(
+                (Path.cwd() / d / RECEIPT).is_file()
+                for d in PROVIDER_DIRS.values()
+            )
+            mode = "project" if has else "user"
         self.target = Target("project" if mode == "project" else "user", pdir)
 
     def on_mount(self) -> None:
