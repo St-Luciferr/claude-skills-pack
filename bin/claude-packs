@@ -555,6 +555,8 @@ cmd_update() {
     printf '%sRefreshing registry (git pull) ...%s\n' "$DIM" "$RESET"
     git -C "$PKG_ROOT" pull --ff-only >/dev/null 2>&1 \
       || warn "could not refresh the registry (git pull failed) — updating from local content"
+  elif [ -n "${CLAUDE_PACKS_DIST:-}" ]; then
+    say "${DIM}bundle content ships inside the package — run \"claude-packs self-update\" to see how to get newer bundles${RESET}"
   elif [ "$IS_MANAGED" -eq 1 ]; then
     warn "registry is not a git checkout (installed with --local) — updating from local content only"
   fi
@@ -618,6 +620,33 @@ INSTALLER_URL="https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/
 
 cmd_self_update() {
   local old_ver="$CLI_VERSION" new_ver
+  # Package-manager installs (PyPI / npm) update through their own tooling — the
+  # registry lives inside the installed package, so git/installer paths don't apply.
+  if [ -n "${CLAUDE_PACKS_DIST:-}" ]; then
+    case "$CLAUDE_PACKS_DIST" in
+      pypi)
+        say "This claude-packs (v${CLI_VERSION}) was installed from PyPI — update it with"
+        say "the tool that installed it:"
+        say "  uv tool upgrade claude-packs        # uv"
+        say "  pipx upgrade claude-packs           # pipx"
+        say "  pip install -U claude-packs         # pip"
+        say ""
+        say "(uvx claude-packs always runs the latest published version.)"
+        ;;
+      npm)
+        say "This claude-packs (v${CLI_VERSION}) was installed from npm — update it with:"
+        say "  npm update -g claude-skills-pack"
+        say ""
+        say "(npx claude-skills-pack@latest always runs the latest published version.)"
+        ;;
+      *)
+        say "This claude-packs (v${CLI_VERSION}) came from a package manager (${CLAUDE_PACKS_DIST})."
+        say "Update it through that package manager."
+        ;;
+    esac
+    say "Then run: claude-packs update   # to push newer bundle content into your installs"
+    return 0
+  fi
   if [ ! -d "${PKG_ROOT}/.git" ]; then
     # --local installs have no git history — updating means re-running the installer,
     # which replaces the registry with a fresh git-backed clone.
@@ -648,6 +677,15 @@ Re-run the installer to update to the latest version:
 }
 
 cmd_self_uninstall() {
+  if [ -n "${CLAUDE_PACKS_DIST:-}" ]; then
+    case "$CLAUDE_PACKS_DIST" in
+      pypi) die "installed from PyPI — remove with the tool that installed it:
+  uv tool uninstall claude-packs   |   pipx uninstall claude-packs   |   pip uninstall claude-packs" ;;
+      npm)  die "installed from npm — remove with:
+  npm rm -g claude-skills-pack" ;;
+      *)    die "installed via ${CLAUDE_PACKS_DIST} — remove it through that package manager." ;;
+    esac
+  fi
   if [ "$IS_MANAGED" -ne 1 ]; then
     die "self-uninstall only works for a device-installed CLI, not a dev clone.
 This looks like a source checkout — nothing to remove."
@@ -1100,10 +1138,13 @@ launch_rich_tui() {
   [ "$OPT_BASIC" -eq 1 ] && return 1
   if [ -n "${OPT_PROJECT+x}" ]; then mode=project; dir="${OPT_PROJECT:-$PWD}"; else mode=user; dir="$PWD"; fi
   cli="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  if command -v python3 >/dev/null 2>&1 && python3 -c 'import textual' 2>/dev/null; then
+  # A PyPI install exports CLAUDE_PACKS_PYTHON (its venv ships Textual); otherwise
+  # probe the system python3.
+  local py="${CLAUDE_PACKS_PYTHON:-python3}"
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c 'import textual' 2>/dev/null; then
     CLAUDE_PACKS_ROOT="$PKG_ROOT" CLAUDE_PACKS_CLI="$cli" CLAUDE_PACKS_VERSION="$CLI_VERSION" \
     CLAUDE_PACKS_TARGET_MODE="$mode" CLAUDE_PACKS_PROJECT_DIR="$dir" \
-      python3 "$script" && return 0
+      "$py" "$script" && return 0
     warn "the rich UI exited with an error — falling back to the basic menu."
     return 1
   fi

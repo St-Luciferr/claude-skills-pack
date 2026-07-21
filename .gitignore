@@ -1,4 +1,6 @@
-*.log
-.DS_Store
 __pycache__/
 *.pyc
+dist/
+*.tgz
+node_modules/
+.venv/

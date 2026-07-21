@@ -92,3 +92,30 @@ Bundles carry standard Claude Code assets — this repo doesn't invent a new for
   `description:`. See any skill under `bundles/aws-connect/skills/` for a reference.
 - **Agents**: a single markdown file with `name:` and `description:` front matter
   defining a subagent. See `bundles/aws-connect/agents/` for examples.
+
+## Releasing
+
+Releases are built and published by CI (`.github/workflows/release.yml`) from a
+version tag:
+
+```bash
+# 1. bump the version (single source of truth — pyproject + CI read it)
+echo 1.11.0 > VERSION
+# keep package.json in sync (CI re-stamps it at publish time, but keep the repo tidy)
+npm version --no-git-tag-version --allow-same-version 1.11.0
+
+# 2. commit, tag, push
+git commit -am "Release v1.11.0" && git tag v1.11.0 && git push && git push --tags
+```
+
+The workflow then: checks the tag matches `VERSION`, smoke-tests the CLI, builds the
+Python sdist/wheel (`uv build`) and the npm tarball (`npm pack`), attaches everything
+to a **GitHub Release**, and publishes to **PyPI** and **npm**.
+
+Registry publishing needs one-time secrets (repo → Settings → Secrets → Actions):
+
+- `PYPI_API_TOKEN` — from https://pypi.org/manage/account/token/ (package: `claude-packs`)
+- `NPM_TOKEN` — an *automation* token from npmjs.com (package: `claude-skills-pack`)
+
+Until those exist the publish steps skip gracefully and you still get the GitHub
+Release with installable artifacts (`pip install <wheel-url>`, `npx <tgz-url>`).

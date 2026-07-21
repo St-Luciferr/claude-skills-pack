@@ -1,0 +1,91 @@
+# Release pipeline: push a tag like v1.10.0 and this
+#   1. sanity-checks the tag matches VERSION,
+#   2. builds the Python sdist+wheel and the npm tarball,
+#   3. creates a GitHub Release with all artifacts attached,
+#   4. publishes to PyPI  (if a PYPI_API_TOKEN secret is configured),
+#   5. publishes to npm   (if an NPM_TOKEN secret is configured).
+#
+# Publishing steps skip gracefully when their token is missing, so the release
+# itself always succeeds — add the secrets whenever you're ready to go public.
+#
+# One-time setup for registry publishing:
+#   PyPI: create an API token at https://pypi.org/manage/account/token/
+#         → repo Settings → Secrets and variables → Actions → PYPI_API_TOKEN
+#   npm:  create an automation token at https://www.npmjs.com/settings/~/tokens
+#         → same place → NPM_TOKEN
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches VERSION
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(cat VERSION)"
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::tag v${tag} does not match VERSION file (${ver})" >&2
+            exit 1
+          fi
+
+      - name: CLI smoke test
+        run: |
+          bash -n bin/claude-packs
+          ./bin/claude-packs --version
+          ./bin/claude-packs list
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build Python package (sdist + wheel)
+        run: uv build
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Build npm tarball
+        run: |
+          npm version --no-git-tag-version --allow-same-version "$(cat VERSION)"
+          npm pack
+          mv claude-skills-pack-*.tgz dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "claude-packs $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
+
+      - name: Publish to PyPI
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -z "$UV_PUBLISH_TOKEN" ]; then
+            echo "PYPI_API_TOKEN not configured — skipping PyPI publish."
+            exit 0
+          fi
+          uv publish dist/*.whl dist/*.tar.gz
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN not configured — skipping npm publish."
+            exit 0
+          fi
+          npm publish dist/claude-skills-pack-*.tgz --access public

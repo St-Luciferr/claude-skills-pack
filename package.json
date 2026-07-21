@@ -1,0 +1,37 @@
+{
+  "name": "claude-skills-pack",
+  "version": "1.10.0",
+  "description": "Claude Code skill & agent bundles with an installer CLI and a rich interactive TUI (command: claude-packs)",
+  "bin": {
+    "claude-packs": "npm/cli.js"
+  },
+  "files": [
+    "npm/",
+    "bin/",
+    "bundles/",
+    "VERSION"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "skills",
+    "agents",
+    "aws-connect",
+    "tui"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/St-Luciferr/claude-skills-pack.git"
+  },
+  "homepage": "https://github.com/St-Luciferr/claude-skills-pack#readme",
+  "scripts": {
+    "test": "bash -n bin/claude-packs && node -e \"require('./package.json')\""
+  }
+}

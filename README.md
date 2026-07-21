@@ -10,21 +10,34 @@ The CLI copies a bundle's skills into `<target>/.claude/skills/` and its agents 
 
 ## Install the CLI
 
-One command, no clone needed:
+Pick whichever package manager you already have — every method gives you the same
+`claude-packs` command with the CLI, the interactive UI, and **all bundles included**
+(no repo access needed):
 
 ```bash
+# Python / uv — recommended: rich UI works out of the box
+uvx claude-packs                       # run once, nothing installed
+uv tool install claude-packs           # install the command
+pipx install claude-packs              # same, via pipx
+pip install claude-packs               # plain pip
+
+# Node / npm  (package name differs — "claude-packs" was taken on npm)
+npx claude-skills-pack                 # run once, nothing installed
+npm install -g claude-skills-pack      # install the command
+
+# No Python or Node? The pure-bash installer:
 curl -fsSL https://raw.githubusercontent.com/St-Luciferr/claude-skills-pack/main/install.sh | bash
 ```
 
-Or from a clone:
+Or from a clone: `git clone https://github.com/St-Luciferr/claude-skills-pack && cd
+claude-skills-pack && ./install.sh`.
 
-```bash
-git clone https://github.com/St-Luciferr/claude-skills-pack
-cd claude-skills-pack && ./install.sh
-```
-
-This puts a managed copy of the registry in `~/.claude-packs` and a `claude-packs`
-command in `~/.local/bin` (the installer tells you if that's not on your `PATH`).
+Package installs are fully self-contained (bundles ship inside the package) and update
+through their own manager — `claude-packs self-update` tells you the exact command.
+The curl installer instead puts a git-backed registry in `~/.claude-packs` and a
+launcher in `~/.local/bin`, and updates itself via `claude-packs self-update`.
+Tagged releases with prebuilt artifacts are on the
+[releases page](https://github.com/St-Luciferr/claude-skills-pack/releases).
 
 **Requirements: bash and the usual coreutils — that's it.** No Node, no npm, no runtime
 to install. `git` is needed to install from a URL and to `self-update`. `jq` is used for
