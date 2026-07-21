@@ -41,36 +41,48 @@ then unavailable, since there's no git remote behind it).
 The quickest way in is the **interactive menu** — run `claude-packs` with no arguments
 (or `claude-packs tui`) and browse, select, and manage bundles from one screen:
 
-```
+```tui
 claude-packs                                 # opens the interactive menu
 
-  claude-packs v1.4.0  — interactive
+  claude-packs v1.5.0  — interactive
   Target ~/.claude (user)   (press t to change)
 
- ❯ ◉ aws-connect          v1.3.0  ✓ installed
+ ❯ ◉ aws-connect          v1.3.0  ◑ partial (2/8)
        Amazon Connect contact center skills + agents
 
-  ↑/↓ move   space select   a all   enter info
+  ↑/↓ move   space select   a all   enter/→ pick items
   i install   x uninstall   u update   t target   q quit
 ```
 
 Navigate with the arrow keys (or `k`/`j`), multi-select with `space` (or `a` for all),
 then press `i`/`x`/`u` to install, uninstall, or update the selection — with nothing
 selected, the action applies to the highlighted row. Press `t` to switch between
-`~/.claude` (all projects) and a specific project's `.claude`, `enter` for details, and
-`q` to quit.
+`~/.claude` (all projects) and a specific project's `.claude`, and `q` to quit.
+
+**Want just some of a bundle?** Press `enter` (or `→`) on a bundle to drill into its
+individual skills and agents, tick the ones you want with `space`, and press `i` to
+install (or `x` to remove) only those. Partly-installed bundles show `◑ partial (n/total)`
+in the list.
 
 Prefer one-shot commands? Every action has a non-interactive equivalent:
 
 ```bash
 claude-packs list                            # see available bundles
-claude-packs install aws-connect             # into ~/.claude (all projects)
-claude-packs install aws-connect --project . # into ./.claude (this project only)
-claude-packs update                          # refresh installed bundles
+claude-packs install aws-connect             # whole bundle → ~/.claude (all projects)
+claude-packs install aws-connect --project . # whole bundle → ./.claude (this project)
+claude-packs install aws-connect:aws-connect-build,aws-connect-verify   # just these two
+claude-packs uninstall aws-connect:aws-connect-build                    # remove one item
+claude-packs update                          # refresh installed bundles (keeps selections)
 claude-packs uninstall aws-connect           # remove a bundle
 claude-packs self-update                     # pull the latest CLI + bundles
 claude-packs self-uninstall                  # remove the CLI from this device
 ```
+
+Append `:item,item` to a bundle name to install or remove specific skills/agents instead
+of the whole bundle. Selective installs are **additive** (adding more items later keeps
+the ones already there), and `update` refreshes only what you picked — it never silently
+re-expands a selection back to the full bundle. Run `claude-packs info <bundle>` to see
+the exact item names.
 
 Skills and agents load at session start — **restart Claude Code** after installing.
 
@@ -107,8 +119,8 @@ default `~/.claude-packs`), `CLAUDE_PACKS_BIN` (launcher dir, default `~/.local/
 claude-packs tui                     interactive menu to browse + manage bundles
 claude-packs list                    list bundles + install status
 claude-packs info <bundle>           show a bundle's skills, agents, description
-claude-packs install <bundle...>     install one or more bundles
-claude-packs uninstall <bundle...>   remove installed bundles (only files it added)
+claude-packs install <bundle[:item,...]>  install a bundle, or just specific skills/agents
+claude-packs uninstall <bundle[:item,...]> remove a bundle, or just specific items
 claude-packs update [bundle...]      refresh the registry + upgrade installs to latest
 claude-packs installed               list what's installed at the target
 claude-packs self-update             update the CLI + registry itself
